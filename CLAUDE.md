@@ -12,12 +12,13 @@ Flow: `flick` freezes the screen, the user drags a region, and a six-button tool
 
 Work follows staged milestones:
 
-- **0, 1, 2 (done):** capture, frozen overlay, selection, Copy, Download, Lock, Esc; recording with system audio (stop by the button or by launching `flick` again) and an in-region preview.
-- **3:** Edit window: brush (width, color), text (font, size, color), undo, redo, clear (undoable), copy, save.
-- **4:** Settings window; GIF/WebM export. The format is a setting applied on save; recording always goes to a temporary MP4.
+- **0-3 (done):** capture, frozen overlay, selection, Copy, Download, Lock, Esc; recording with system audio (stop by the button or by launching `flick` again) and an in-region preview; an in-region editor (brush, text, undo, redo, clear).
+- **4:** Settings (planned in place, like the rest); GIF/WebM export: `record/export.rs` works, progress display is missing. The format is a setting applied on save; recording always goes to a temporary MP4.
 - **5:** multi-monitor and fractional scaling, 60 FPS, notifications, PKGBUILD, keybinding docs.
 
-Settings and Edit are disabled in `ui/toolbar.rs`. The config file already drives FPS, audio, cursor and the saved video format. Microphone and hardware encoding are intentionally excluded.
+Settings is disabled in `ui/toolbar.rs`. The config file already drives FPS, audio, cursor and the saved video format. Microphone and hardware encoding are intentionally excluded.
+
+User decisions: no separate windows (preview and editor were moved into the region), blue accent `#1a73e8`, no resizing while recording. Commits go to stage branches (`stage-N`).
 
 ## Commands
 
@@ -40,6 +41,7 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 
 - **Two Wayland connections.** GTK owns one; `capture/wlr.rs` (`wlr-screencopy` v3) opens its own so it can run on a separate thread. `app.rs` must grab the frame *before* the overlay is mapped, or the overlay ends up in the picture.
 - **Coordinates.** Regions are logical pixels relative to one output. Conversion to frame pixels goes through `Rect::scaled`, which rounds edges rather than sizes. `Frame` is always tightly packed BGRX; stride, y-inversion and channel order are normalized in `wlr.rs`.
+- **Capture loop.** A busy Wayland socket (`WouldBlock`) is not an error, and events carry a frame id so those of a cancelled capture are ignored; both once ended recordings. Streaming is paced by `CaptureRequest::interval` to spare the compositor.
 - **Recording pipeline.** The capture thread puts frames into `FrameSlot` (newest frame only) using `copy_with_damage`, so a static screen produces nothing. `pacer.rs` turns that into constant frame rate by writing the latest frame on a monotonic clock to ffmpeg's stdin. ffmpeg captures system audio itself (`-f pulse -i @DEFAULT_MONITOR@`, which must precede the video input).
 - **Stopping a recording.** The pacer drops stdin (EOF, `-shortest`), then `Encoder::finish` escalates to SIGINT and SIGKILL on timeout. Never join the pacer unconditionally: it may be blocked writing to a hung ffmpeg.
 - **UI.** `ui/selection.rs` holds the selection rules with no GTK so they can be unit-tested; `ui/overlay.rs` is the layer-shell window. Closures hold `Weak` references; `Overlay` keeps itself alive through its `keep` field until closed and owns the `Preview`. The toolbar must stay strictly outside the region (`place_panel`) so it is not recorded; when nothing fits, it goes inside for screenshots and must be hidden while recording.
@@ -47,6 +49,8 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 - **Moving while recording.** The panel grip moves the region (its inside must be click-through). The border follows the pointer exactly, but the screen shows it some frames late, so during a drag (`Live::Track`) the capture takes a wider window, finds the border in the picture among the positions recently drawn (`capture/track.rs`) and cuts out its inside; frames without a match are dropped. The overlay must therefore draw the border with the constants from `track.rs`. A lagging border felt jerky and pausing the video lost the movement; both were tried. The panel turns transparent meanwhile to avoid per-frame relayout. Resizing while recording was deliberately removed. `record/fit.rs` absorbs one-pixel size changes caused by fractional scaling.
 - **Reentrancy.** Hiding a widget can synchronously end a gesture, so never hold a `RefCell` borrow that a gesture handler needs while changing widgets.
 - **Preview.** After stopping, the overlay plays the recording inside the region (`ui/preview.rs`); clicks are accepted only in the region and the panel, the rest of the screen stays usable. Ask questions inline: dialogs would open underneath the overlay. Recordings live in `~/.cache/flick` until the preview closes. Copy saves first, because the clipboard holds a file URI that must outlive the temporary file. Launching `flick` during a preview opens a new overlay.
+- **Editor.** Edits in place: `ui/editor/document.rs` holds operations in frame pixels and one cairo function draws both screen and export. Annotations belong to the frozen frame, stay after leaving the editor and are included by Copy and Download. Only popovers work on the overlay (dialogs open underneath), hence the own color picker and font list. Brush and text have separate colors. Escape or a press elsewhere finishes the text being typed, never discards it; undo takes it back. Undo and redo use hardware key codes so they work in any keyboard layout. The text being typed is a `TextView` sized by hand to match the pango rendering. `Stepper` replaces `SpinButton`, whose layout cannot be made compact, and both tools use equally wide controls so the panel keeps its size. Popover key events do not reach the window's key controller.
+- **Styling** is one CSS string in `ui/overlay.rs`, scoped under `.flick-toolbar`.
 - **Clipboard** goes through `wl-copy`, whose forked process keeps the content alive after Flick exits.
 - **Lock** (`~/.local/state/flick/lock.toml`) is valid only if the output's name, size and scale all still match. Config is `~/.config/flick/config.toml`.
 - **Single instance** comes from the `GtkApplication` D-Bus id `dev.flick.Flick`.
@@ -59,4 +63,4 @@ The nested window is tiled by the host, so its output size and scale vary. Wait 
 
 For audio, run private `pipewire`, `wireplumber -p policy` and `pipewire-pulse` in that runtime directory with a `module-null-sink` as the default sink, so the user's audio is never touched.
 
-`examples/vptr.rs` (virtual mouse) and `examples/vesc.rs` (Escape key; takes a file from `xkbcli compile-keymap`) drive it. Hyprland 0.57 parses its config as Lua, so `.conf` syntax such as `monitor=` fails. Wait a second or so after a click before taking a screenshot, since the UI may not have redrawn.
+`examples/vptr.rs` (virtual mouse) and `examples/vesc.rs` (keyboard; takes a file from `xkbcli compile-keymap` and evdev codes, Escape by default) drive it. Hyprland 0.57 parses its config as Lua, so `.conf` syntax such as `monitor=` fails. Wait a second or so after a click before taking a screenshot, since the UI may not have redrawn.

@@ -38,10 +38,8 @@ impl Toolbar {
         let edit = button("document-edit-symbolic", "Edit");
         let copy = button("edit-copy-symbolic", "Copy to clipboard");
         let download = button("folder-download-symbolic", "Save");
-        // Arrive with stages 3 and 4.
-        for b in [&settings, &edit] {
-            b.set_sensitive(false);
-        }
+        // Arrives with stage 4.
+        settings.set_sensitive(false);
         row.append(&settings);
         row.append(&lock);
         for b in [&play, &edit, &copy, &download] {

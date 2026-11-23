@@ -1,5 +1,6 @@
-//! Test helper: presses Escape on a virtual keyboard. Nested compositor only.
-//! Argument: a compiled XKB keymap (`xkbcli compile-keymap`).
+//! Test helper: presses keys on a virtual keyboard. Nested compositor only.
+//! Argument: a compiled XKB keymap (`xkbcli compile-keymap`), then evdev codes
+//! (`c44` is Ctrl+Z); Escape by default.
 use std::{fs::File, io::Write, os::fd::AsFd, thread::sleep, time::Duration};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
@@ -56,9 +57,24 @@ fn main() {
     k.keymap(1, file.as_fd(), map.len() as u32);
     q.roundtrip(&mut s).unwrap();
     sleep(Duration::from_millis(200));
-    for (t, state) in [(1, 1), (60, 0)] {
-        k.key(t, 1, state); // KEY_ESC
+    let codes: Vec<String> = std::env::args().skip(2).collect();
+    let codes = if codes.is_empty() {
+        vec!["1".into()]
+    } else {
+        codes
+    };
+    for c in codes {
+        let (ctrl, code) = match c.strip_prefix('c') {
+            Some(code) => (true, code),
+            None => (false, c.as_str()),
+        };
+        k.modifiers(if ctrl { 4 } else { 0 }, 0, 0, 0);
+        for (t, state) in [(1, 1), (60, 0)] {
+            k.key(t, code.parse().unwrap(), state);
+            q.roundtrip(&mut s).unwrap();
+            sleep(Duration::from_millis(60));
+        }
+        k.modifiers(0, 0, 0, 0);
         q.roundtrip(&mut s).unwrap();
-        sleep(Duration::from_millis(60));
     }
 }

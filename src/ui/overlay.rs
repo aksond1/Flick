@@ -1,4 +1,10 @@
-use super::{preview::Preview, selection::Selection, show_error, toolbar::Toolbar};
+use super::{
+    editor::{Editor, Tool},
+    preview::Preview,
+    selection::Selection,
+    show_error,
+    toolbar::Toolbar,
+};
 use crate::{
     capture::{CaptureRequest, Frame, OutputInfo, track, wlr::WlrBackend},
     config::{Config, Lock, Paths},
@@ -10,7 +16,7 @@ use anyhow::{Context, Result};
 use gtk::{cairo, gdk, gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -31,6 +37,34 @@ window.flick-overlay { background: transparent; }
 .flick-toolbar button:checked { background: #1a73e8; }
 .flick-toolbar button:disabled { opacity: 0.35; }
 .flick-time { color: #ffffff; padding: 0 8px; font-feature-settings: 'tnum'; }
+.flick-toolbar entry { background: #303136; color: #ffffff; border: none; outline: none;
+  box-shadow: none; border-radius: 8px; min-height: 32px; }
+.flick-toolbar entry.error { background: #7a2f2f; }
+.flick-toolbar entry text { color: #ffffff; }
+.flick-toolbar .flick-field { background: #303136; border-radius: 8px; min-height: 32px; }
+.flick-toolbar scale.flick-field { padding: 0 10px; }
+.flick-toolbar scale.flick-field trough { margin: 0; min-height: 4px; background: #55575c; }
+.flick-toolbar scale.flick-field highlight { background: #1a73e8; min-height: 4px; }
+.flick-toolbar scale.flick-field slider { min-width: 14px; min-height: 14px; margin: -5px;
+  background: #ffffff; border: none; box-shadow: none; }
+.flick-toolbar .flick-field button { min-width: 26px; min-height: 32px; border-radius: 8px; }
+.flick-toolbar .flick-field entry { background: none; padding: 0; min-height: 32px; }
+.flick-toolbar .flick-field entry text { min-width: 0; padding: 0; }
+.flick-toolbar .flick-field button.toggle { min-width: 34px; }
+.flick-toolbar button.flick-letter { font-weight: bold; font-size: 1.05em; }
+.flick-toolbar menubutton.flick-color > button { min-width: 26px; min-height: 32px; }
+.flick-toolbar menubutton.flick-color > button, .flick-toolbar menubutton.flick-color > button:hover,
+.flick-toolbar menubutton.flick-color > button:checked { background: none; outline: none; }
+.flick-toolbar dropdown.flick-font { min-width: 94px; }
+.flick-toolbar dropdown.flick-font > button { background: #303136; min-height: 32px;
+  min-width: 78px; padding: 0 8px; border-radius: 8px; }
+.flick-toolbar dropdown.flick-font > button:hover { background: #3c4043; }
+.flick-toolbar dropdown.flick-font > button:checked { background: #3c4043; }
+.flick-toolbar popover arrow { background: #2b2c30; }
+.flick-toolbar text selection { background: #1a73e8; color: #ffffff; }
+.flick-toolbar popover contents, .flick-toolbar popover listview { background: #2b2c30;
+  color: #ffffff; }
+.flick-toolbar button.flick-swatch { min-width: 26px; min-height: 26px; }
 .flick-toolbar button.flick-text { padding: 0 10px; }
 .flick-toolbar label { color: #ffffff; }
 .flick-toolbar image { color: #ffffff; }
@@ -52,6 +86,9 @@ pub struct Overlay {
     texture: gdk::MemoryTexture,
     mode: RefCell<Mode>,
     layers: gtk::Overlay,
+    editor: OnceCell<Rc<Editor>>,
+    /// The editor panel replaces the toolbar and the region stays put.
+    editing: Cell<bool>,
     /// Counts moves during recording, so a new one outdates a pending resume.
     moves: Cell<u32>,
     /// Clickable areas outside selection mode; `None` is the whole surface.
@@ -131,6 +168,8 @@ pub fn open(
         texture,
         mode: RefCell::new(Mode::Select),
         layers,
+        editor: OnceCell::new(),
+        editing: Cell::new(false),
         moves: Cell::new(0),
         input: RefCell::new(None),
         keep: RefCell::new(None),
@@ -145,6 +184,17 @@ pub fn open(
         paths,
     });
     *o.keep.borrow_mut() = Some(o.clone());
+    let weak = Rc::downgrade(&o);
+    let scale = f64::from(o.frame.width) / f64::from(o.screen.w);
+    let editor = Editor::new(&o.layers, scale, move |replace| {
+        if let Some(o) = weak.upgrade() {
+            if replace && o.editing.get() {
+                o.refresh();
+            }
+            o.canvas.queue_draw();
+        }
+    });
+    let _ = o.editor.set(editor);
     connect(&o);
     o.refresh();
     o.window.present();
@@ -164,20 +214,37 @@ fn connect(o: &Rc<Overlay>) {
     drag.set_button(gdk::BUTTON_PRIMARY);
     let weak = Rc::downgrade(o);
     drag.connect_drag_begin(move |_, x, y| {
-        if let Some(o) = weak.upgrade().filter(|o| o.selecting()) {
-            o.selection.borrow_mut().begin(point(x, y));
-            o.refresh();
+        let Some(o) = weak.upgrade().filter(|o| o.selecting()) else {
+            return;
+        };
+        if o.editing.get() {
+            // Takes the keyboard back from the panel's fields.
+            gtk::prelude::GtkWindowExt::set_focus(&o.window, None::<&gtk::Widget>);
+            if o.in_region((x, y)) {
+                o.editor().press((x, y));
+            }
+            return;
         }
+        o.selection.borrow_mut().begin(point(x, y));
+        o.refresh();
     });
     let weak = Rc::downgrade(o);
     drag.connect_drag_update(move |g, dx, dy| {
         if let (Some(o), Some((x, y))) = (weak.upgrade(), g.start_point()) {
+            if o.editing.get() {
+                o.editor().drag((x + dx, y + dy));
+                return;
+            }
             o.drag_to(point(x + dx, y + dy));
         }
     });
     let weak = Rc::downgrade(o);
     drag.connect_drag_end(move |_, _, _| {
         if let Some(o) = weak.upgrade() {
+            if o.editing.get() {
+                o.editor().release();
+                return;
+            }
             o.selection.borrow_mut().end();
             o.refresh();
         }
@@ -222,6 +289,11 @@ fn connect(o: &Rc<Overlay>) {
         if let Some(o) = weak.upgrade() {
             let s = o.selection.borrow();
             let name = match s.edges_at(point(x, y)).map(|e| (e.x, e.y)) {
+                _ if o.editing.get() => match o.editor().tool() {
+                    _ if !o.in_region((x, y)) => "default",
+                    Tool::Brush => "crosshair",
+                    Tool::Text => "text",
+                },
                 _ if s.locked => "default",
                 Some((0, _)) => "ns-resize",
                 Some((_, 0)) => "ew-resize",
@@ -238,10 +310,13 @@ fn connect(o: &Rc<Overlay>) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak = Rc::downgrade(o);
-    keys.connect_key_pressed(move |_, key, _, _| {
+    keys.connect_key_pressed(move |_, key, code, state| {
         let Some(o) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
+        if o.editing.get() {
+            return o.editor_key(key, code, state);
+        }
         match (key, o.preview()) {
             (gdk::Key::Escape, _) => o.window.close(),
             (gdk::Key::space, Some(p)) => p.toggle(),
@@ -259,17 +334,33 @@ fn connect(o: &Rc<Overlay>) {
         }
     });
     let weak = Rc::downgrade(o);
-    o.toolbar.copy.connect_clicked(move |_| {
+    o.toolbar.edit.connect_clicked(move |_| {
         if let Some(o) = weak.upgrade() {
-            o.close_after(o.copy());
+            o.set_editing(true);
         }
     });
     let weak = Rc::downgrade(o);
-    o.toolbar.download.connect_clicked(move |_| {
+    o.editor().close.connect_clicked(move |_| {
         if let Some(o) = weak.upgrade() {
-            o.close_after(o.download());
+            o.set_editing(false);
         }
     });
+    for b in [&o.toolbar.copy, &o.editor().copy] {
+        let weak = Rc::downgrade(o);
+        b.connect_clicked(move |_| {
+            if let Some(o) = weak.upgrade() {
+                o.close_after(o.copy());
+            }
+        });
+    }
+    for b in [&o.toolbar.download, &o.editor().save] {
+        let weak = Rc::downgrade(o);
+        b.connect_clicked(move |_| {
+            if let Some(o) = weak.upgrade() {
+                o.close_after(o.download());
+            }
+        });
+    }
     let weak = Rc::downgrade(o);
     o.toolbar.play.connect_clicked(move |_| {
         if let Some(o) = weak.upgrade()
@@ -318,7 +409,11 @@ impl Overlay {
         // A copy: hiding a widget can end a drag, whose handler needs the selection.
         let s = self.selection.borrow().clone();
         let preview = self.preview();
-        let root = preview.as_ref().map_or(&self.toolbar.root, |p| &p.panel);
+        let root = match &preview {
+            Some(p) => &p.panel,
+            None if self.editing.get() => &self.editor().panel,
+            None => &self.toolbar.root,
+        };
         self.toolbar.show_locked(s.locked);
         // While recording everything stays visible and clear of the capture.
         let recording = self.recording();
@@ -410,6 +505,11 @@ impl Overlay {
         }
         cr.fill()?;
         let Some(r) = s.region else { return Ok(()) };
+        cr.save()?;
+        cr.rectangle(r.x.into(), r.y.into(), r.w.into(), r.h.into());
+        cr.clip();
+        self.editor().render(cr)?;
+        cr.restore()?;
         cr.set_source_rgb(ar, ag, ab);
         cr.set_line_width(2.0);
         cr.rectangle(
@@ -419,6 +519,9 @@ impl Overlay {
             f64::from(r.h) + 2.0,
         );
         cr.stroke()?;
+        if self.editing.get() {
+            return Ok(());
+        }
         cr.set_line_width(1.0);
         cr.set_dash(&[6.0, 5.0], 0.0);
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
@@ -446,6 +549,50 @@ impl Overlay {
             cr.show_text(&text)?;
         }
         Ok(())
+    }
+
+    fn editor(&self) -> &Rc<Editor> {
+        self.editor.get().expect("set right after creation")
+    }
+
+    fn in_region(&self, (x, y): (f64, f64)) -> bool {
+        let inside = |r: Rect| {
+            x >= r.x.into() && y >= r.y.into() && x < r.right().into() && y < r.bottom().into()
+        };
+        self.selection.borrow().region.is_some_and(inside)
+    }
+
+    /// Annotations stay when the editor closes; copying and saving include them.
+    fn set_editing(&self, on: bool) {
+        self.editor().commit_text();
+        self.editing.set(on);
+        self.toolbar.error.set_visible(false);
+        self.editor().error.set_visible(false);
+        self.toolbar.root.set_visible(false);
+        self.editor().panel.set_visible(false);
+        gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
+        self.refresh();
+    }
+
+    fn editor_key(&self, key: gdk::Key, code: u32, state: gdk::ModifierType) -> glib::Propagation {
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window);
+        // Fields have their own undo.
+        let in_field = focus.is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
+        let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+        // Hardware codes, so the shortcuts work in any keyboard layout.
+        const Z: u32 = 52;
+        const Y: u32 = 29;
+        match (key, code) {
+            // Finishes the text; undo takes it back.
+            (gdk::Key::Escape, _) if self.editor().commit_text() => {}
+            (gdk::Key::Escape, _) => self.set_editing(false),
+            (_, Z) if ctrl && shift && !in_field => self.editor().redo(),
+            (_, Z) if ctrl && !in_field => self.editor().undo(),
+            (_, Y) if ctrl && !in_field => self.editor().redo(),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
     }
 
     fn recording(&self) -> bool {
@@ -687,7 +834,10 @@ impl Overlay {
 
     fn png(&self) -> Result<Vec<u8>> {
         let region = self.selection.borrow().region.context("nothing selected")?;
-        save::encode_png(&self.frame.crop(self.pixels(region))?)
+        self.editor().commit_text();
+        let r = self.pixels(region);
+        let frame = self.editor().flatten(self.frame.crop(r)?, (r.x, r.y))?;
+        save::encode_png(&frame)
     }
 
     fn copy(&self) -> Result<()> {
@@ -736,7 +886,13 @@ impl Overlay {
             Ok(()) => self.toolbar.error.set_visible(false),
             Err(e) => {
                 eprintln!("flick: {e:#}");
-                self.toolbar.show_error(&format!("{e:#}"));
+                let text = format!("{e:#}");
+                if self.editing.get() {
+                    self.editor().error.set_text(&text);
+                    self.editor().error.set_visible(true);
+                } else {
+                    self.toolbar.show_error(&text);
+                }
             }
         }
     }

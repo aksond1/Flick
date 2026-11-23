@@ -1,3 +1,4 @@
+pub mod editor;
 pub mod overlay;
 pub mod preview;
 pub mod selection;
