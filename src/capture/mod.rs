@@ -1,14 +1,17 @@
+pub mod track;
 pub mod wlr;
 
 use crate::geometry::Rect;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +29,8 @@ pub struct CaptureRequest {
     /// Output-local logical region; `None` is the whole output.
     pub region: Option<Rect>,
     pub cursor: bool,
+    /// Shortest time between streamed frames; unused for single frames.
+    pub interval: Duration,
 }
 
 /// Tightly packed BGRX pixels, top row first.
@@ -79,6 +84,53 @@ impl FrameSlot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Live {
+    On(Option<Rect>),
+    /// The region is being dragged across this screen: follow its border.
+    Track(Rect),
+}
+
+/// Border positions remembered while tracking.
+const DRAWN: usize = 20;
+
+/// What a running stream captures; may change at any time.
+#[derive(Clone)]
+pub struct LiveRegion(Arc<Mutex<(Live, VecDeque<Rect>)>>);
+
+impl LiveRegion {
+    pub fn new(region: Option<Rect>) -> Self {
+        let drawn = region.into_iter().collect();
+        Self(Arc::new(Mutex::new((Live::On(region), drawn))))
+    }
+
+    pub fn get(&self) -> Live {
+        self.0.lock().unwrap().0
+    }
+
+    pub fn track(&self, screen: Rect) {
+        self.0.lock().unwrap().0 = Live::Track(screen);
+    }
+
+    /// Captures `region` from now on.
+    pub fn resume(&self, region: Rect) {
+        self.0.lock().unwrap().0 = Live::On(Some(region));
+    }
+
+    /// Notes that the border was drawn around `region`.
+    pub fn drawn(&self, region: Rect) {
+        let d = &mut self.0.lock().unwrap().1;
+        d.retain(|r| *r != region);
+        d.push_front(region);
+        d.truncate(DRAWN);
+    }
+
+    /// Recent border positions, newest first.
+    pub fn recent(&self) -> Vec<Rect> {
+        self.0.lock().unwrap().1.iter().copied().collect()
+    }
+}
+
 /// Stops the capture thread when dropped.
 pub struct StreamHandle {
     stop: Arc<AtomicBool>,
@@ -119,7 +171,13 @@ impl Drop for StreamHandle {
 pub trait CaptureBackend: Send {
     fn outputs(&mut self) -> Result<Vec<OutputInfo>>;
     fn frame(&mut self, req: &CaptureRequest) -> Result<Frame>;
-    fn stream(self: Box<Self>, req: CaptureRequest, slot: FrameSlot) -> Result<StreamHandle>;
+    /// Starts with `req.region`, then follows `region`.
+    fn stream(
+        self: Box<Self>,
+        req: CaptureRequest,
+        region: LiveRegion,
+        slot: FrameSlot,
+    ) -> Result<StreamHandle>;
 }
 
 #[cfg(test)]

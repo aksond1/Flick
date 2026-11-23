@@ -80,6 +80,7 @@ impl Lock {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Paths {
     pub config: PathBuf,
     pub lock: PathBuf,

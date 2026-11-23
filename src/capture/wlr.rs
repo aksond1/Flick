@@ -1,5 +1,8 @@
 //! wlr-screencopy backend on its own Wayland connection.
-use super::{CaptureBackend, CaptureRequest, Frame, FrameSlot, OutputInfo, StreamHandle};
+use super::{
+    CaptureBackend, CaptureRequest, Frame, FrameSlot, Live, LiveRegion, OutputInfo, StreamHandle,
+    track,
+};
 use anyhow::{Context, Result, bail};
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
@@ -15,7 +18,9 @@ use std::{
     time::{Duration, Instant},
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum,
+    backend::WaylandError,
+    delegate_noop,
     protocol::{
         wl_buffer::WlBuffer,
         wl_output::{self, WlOutput},
@@ -48,6 +53,8 @@ enum Phase {
 }
 
 struct Pending {
+    /// Tells events of the current frame from those of a cancelled one.
+    id: u64,
     spec: Option<Spec>,
     y_invert: bool,
     phase: Phase,
@@ -89,6 +96,7 @@ impl WlrBackend {
             manager: None,
             outputs: Vec::new(),
             pending: Pending {
+                id: 0,
                 spec: None,
                 y_invert: false,
                 phase: Phase::Negotiating,
@@ -110,31 +118,31 @@ impl WlrBackend {
         })
     }
 
-    /// Dispatches until the frame leaves `phase`. Returns false if `stop` was set.
+    /// Dispatches until the frame leaves `phase`. Returns false if cancelled.
     fn wait(
         &mut self,
         phase: Phase,
         deadline: Option<Instant>,
-        stop: Option<&AtomicBool>,
+        cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<bool> {
         loop {
             self.queue.dispatch_pending(&mut self.state)?;
             if self.state.pending.phase != phase {
                 return Ok(true);
             }
-            if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            if cancel.is_some_and(|c| c()) {
                 return Ok(false);
             }
             if deadline.is_some_and(|d| Instant::now() > d) {
                 bail!("compositor did not deliver a frame in time");
             }
-            self.conn.flush()?;
+            retry_later(self.conn.flush())?;
             let Some(guard) = self.queue.prepare_read() else {
                 continue;
             };
             let timeout = Timespec {
                 tv_sec: 0,
-                tv_nsec: 50_000_000,
+                tv_nsec: 15_000_000,
             };
             let n = {
                 let fd = self.conn.as_fd();
@@ -145,17 +153,17 @@ impl WlrBackend {
                 }
             };
             if n > 0 {
-                guard.read()?;
+                retry_later(guard.read().map(drop))?;
             }
         }
     }
 
-    /// `Ok(None)` means `stop` was set while waiting.
+    /// `Ok(None)` means it was cancelled while waiting.
     fn capture(
         &mut self,
         req: &CaptureRequest,
         damage: bool,
-        stop: Option<&AtomicBool>,
+        cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<Option<Frame>> {
         let qh = self.queue.handle();
         let (output, info) = self
@@ -165,7 +173,9 @@ impl WlrBackend {
             .find(|(_, i)| i.name == req.output)
             .with_context(|| format!("no output named {}", req.output))?;
         let (output, info) = (output.clone(), info.clone());
+        let id = self.state.pending.id + 1;
         self.state.pending = Pending {
+            id,
             spec: None,
             y_invert: false,
             phase: Phase::Negotiating,
@@ -174,10 +184,10 @@ impl WlrBackend {
         let cursor = i32::from(req.cursor);
         let obj = match req.region {
             Some(r) if r.w <= 0 || r.h <= 0 => bail!("empty region"),
-            Some(r) => manager.capture_output_region(cursor, &output, r.x, r.y, r.w, r.h, &qh, ()),
-            None => manager.capture_output(cursor, &output, &qh, ()),
+            Some(r) => manager.capture_output_region(cursor, &output, r.x, r.y, r.w, r.h, &qh, id),
+            None => manager.capture_output(cursor, &output, &qh, id),
         };
-        let result = self.finish_capture(&obj, damage, stop);
+        let result = self.finish_capture(&obj, damage, cancel);
         obj.destroy();
         result.with_context(|| format!("capturing {}", info.name))
     }
@@ -186,7 +196,7 @@ impl WlrBackend {
         &mut self,
         obj: &ZwlrScreencopyFrameV1,
         damage: bool,
-        stop: Option<&AtomicBool>,
+        cancel: Option<&dyn Fn() -> bool>,
     ) -> Result<Option<Frame>> {
         let deadline = Instant::now() + FRAME_TIMEOUT;
         self.wait(Phase::Negotiating, Some(deadline), None)?;
@@ -209,7 +219,7 @@ impl WlrBackend {
         }
         // A static screen produces no damage, so that wait has no deadline.
         let deadline = (!damage).then_some(deadline);
-        if !self.wait(Phase::BufferDone, deadline, stop)? {
+        if !self.wait(Phase::BufferDone, deadline, cancel)? {
             return Ok(None);
         }
         if self.state.pending.phase != Phase::Ready {
@@ -258,7 +268,12 @@ impl CaptureBackend for WlrBackend {
         self.capture(req, false, None)?.context("capture cancelled")
     }
 
-    fn stream(mut self: Box<Self>, req: CaptureRequest, slot: FrameSlot) -> Result<StreamHandle> {
+    fn stream(
+        mut self: Box<Self>,
+        mut req: CaptureRequest,
+        region: LiveRegion,
+        slot: FrameSlot,
+    ) -> Result<StreamHandle> {
         // The first frame is taken immediately; errors surface to the caller.
         slot.put(self.frame(&req)?);
         let stop = Arc::new(AtomicBool::new(false));
@@ -266,14 +281,52 @@ impl CaptureBackend for WlrBackend {
         let thread = std::thread::Builder::new()
             .name("capture".into())
             .spawn(move || {
+                let mut shown = Some(Live::On(req.region));
                 while !flag.load(Ordering::Relaxed) {
-                    if let Some(f) = self.capture(&req, true, Some(&flag))? {
-                        slot.put(f);
+                    let want = region.get();
+                    let win = match want {
+                        Live::On(r) => r,
+                        Live::Track(screen) => {
+                            region.recent().first().map(|r| track::window(*r, screen))
+                        }
+                    };
+                    req.region = win;
+                    // A new region is copied at once; only then wait for changes.
+                    let damage = shown == Some(want);
+                    let cancel = || flag.load(Ordering::Relaxed) || region.get() != want;
+                    let start = Instant::now();
+                    // A frame finished after a change may show the moving border.
+                    if let Some(f) = self.capture(&req, damage, Some(&cancel))?
+                        && region.get() == want
+                    {
+                        shown = Some(want);
+                        match (want, win) {
+                            (Live::Track(_), Some(win)) => {
+                                // Without a border the last frame is kept.
+                                if let Some(f) = track::cut(&f, win, &region.recent()) {
+                                    slot.put(f);
+                                }
+                            }
+                            _ => slot.put(f),
+                        }
+                    }
+                    // Faster than the video needs only burdens the compositor, except
+                    // while tracking, where late frames make the motion uneven.
+                    if matches!(want, Live::On(_)) {
+                        std::thread::sleep(req.interval.saturating_sub(start.elapsed()));
                     }
                 }
                 Ok(())
             })?;
         Ok(StreamHandle::new(stop, thread))
+    }
+}
+
+/// The socket being momentarily full or empty is not an error.
+fn retry_later(r: Result<(), WaylandError>) -> Result<(), WaylandError> {
+    match r {
+        Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+        r => r,
     }
 }
 
@@ -368,16 +421,19 @@ impl Dispatch<WlOutput, ()> for State {
     }
 }
 
-impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
+impl Dispatch<ZwlrScreencopyFrameV1, u64> for State {
     fn event(
         s: &mut Self,
         _: &ZwlrScreencopyFrameV1,
         e: frame::Event,
-        _: &(),
+        id: &u64,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         let p = &mut s.pending;
+        if p.id != *id {
+            return;
+        }
         match e {
             frame::Event::Buffer {
                 format: WEnum::Value(format),

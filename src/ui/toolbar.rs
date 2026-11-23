@@ -9,6 +9,9 @@ pub struct Toolbar {
     pub edit: gtk::Button,
     pub copy: gtk::Button,
     pub download: gtk::Button,
+    pub time: gtk::Label,
+    /// Moves the region while recording.
+    pub grip: gtk::Image,
     pub error: gtk::Label,
 }
 
@@ -35,8 +38,8 @@ impl Toolbar {
         let edit = button("document-edit-symbolic", "Edit");
         let copy = button("edit-copy-symbolic", "Copy to clipboard");
         let download = button("folder-download-symbolic", "Save");
-        // Arrive with stages 2-4.
-        for b in [&settings, &play, &edit] {
+        // Arrive with stages 3 and 4.
+        for b in [&settings, &edit] {
             b.set_sensitive(false);
         }
         row.append(&settings);
@@ -44,6 +47,16 @@ impl Toolbar {
         for b in [&play, &edit, &copy, &download] {
             row.append(b);
         }
+        let time = gtk::Label::new(Some("00:00"));
+        time.add_css_class("flick-time");
+        time.set_visible(false);
+        row.append(&time);
+        let grip = gtk::Image::from_icon_name("list-drag-handle-symbolic");
+        grip.set_size_request(36, 36);
+        grip.set_tooltip_text(Some("Drag to move the region"));
+        grip.set_cursor_from_name(Some("move"));
+        grip.set_visible(false);
+        row.append(&grip);
         let error = gtk::Label::new(None);
         error.add_css_class("flick-error");
         error.set_wrap(true);
@@ -59,6 +72,8 @@ impl Toolbar {
             edit,
             copy,
             download,
+            time,
+            grip,
             error,
         };
         t.show_locked(false);
@@ -77,6 +92,23 @@ impl Toolbar {
         } else {
             "Lock region"
         }));
+    }
+
+    /// While recording only the stop button and the timer remain.
+    pub fn show_recording(&self, on: bool) {
+        for b in [&self.settings, &self.edit, &self.copy, &self.download] {
+            b.set_visible(!on);
+        }
+        self.lock.set_visible(!on);
+        self.time.set_text("00:00");
+        self.time.set_visible(on);
+        self.play.set_icon_name(if on {
+            "media-playback-stop-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        });
+        self.play
+            .set_tooltip_text(Some(if on { "Stop" } else { "Record" }));
     }
 
     pub fn show_error(&self, message: &str) {

@@ -78,6 +78,7 @@ fn request(
         output,
         region,
         cursor,
+        interval: Duration::ZERO,
     })
 }
 

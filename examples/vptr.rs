@@ -1,4 +1,5 @@
 //! Test helper: drives a virtual pointer. Use only inside a nested compositor.
+//! `VPTR_STEP` is the pause after each step in ms, 40 by default.
 //! `VPTR_SIZE=WxH` is the output size, 1920x1080 by default.
 //! Steps: `m X Y` move, `d` press, `u` release, `s MS` sleep.
 use std::{env, thread::sleep, time::Duration};
@@ -39,6 +40,8 @@ fn main() {
     let size = env::var("VPTR_SIZE").unwrap_or("1920x1080".into());
     let (w, h) = size.split_once('x').unwrap();
     let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
+    let step = env::var("VPTR_STEP").map_or(40, |s| s.parse().unwrap());
+    let step = Duration::from_millis(step);
     let conn = Connection::connect_to_env().unwrap();
     let mut q = conn.new_event_queue();
     conn.display().get_registry(&q.handle(), ());
@@ -64,6 +67,6 @@ fn main() {
             p.frame();
         }
         q.roundtrip(&mut s).unwrap();
-        sleep(Duration::from_millis(40));
+        sleep(step);
     }
 }

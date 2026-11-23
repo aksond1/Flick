@@ -1,9 +1,13 @@
 //! Turns "newest frame" into constant frame rate on a monotonic clock.
-use crate::capture::FrameSlot;
-use anyhow::{Context, Result, bail};
+use super::fit::fit;
+use crate::capture::{Frame, FrameSlot};
+use anyhow::{Context, Result};
 use std::{
     io::Write,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -21,14 +25,21 @@ pub fn run(mut sink: impl Write, slot: &FrameSlot, fps: u32, stop: &AtomicBool) 
     let first = slot.latest().context("no frame to record")?;
     let start = Instant::now();
     let mut written = 0;
+    // The last frame that needed fitting, with its result.
+    let mut fitted: Option<(Arc<Frame>, Vec<u8>)> = None;
     while !stop.load(Ordering::Relaxed) {
         let due = frames_due(start.elapsed(), fps);
         while written < due {
             let frame = slot.latest().unwrap_or_else(|| first.clone());
-            if frame.data.len() != first.data.len() {
-                bail!("capture size changed during recording");
+            if (frame.width, frame.height) == (first.width, first.height) {
+                sink.write_all(&frame.data)?;
+            } else {
+                if fitted.as_ref().is_none_or(|(f, _)| !Arc::ptr_eq(f, &frame)) {
+                    let data = fit(&frame, first.width, first.height);
+                    fitted = Some((frame, data));
+                }
+                sink.write_all(&fitted.as_ref().unwrap().1)?;
             }
-            sink.write_all(&frame.data)?;
             written += 1;
             if stop.load(Ordering::Relaxed) {
                 break;

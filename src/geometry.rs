@@ -32,6 +32,17 @@ impl Rect {
         self.y + self.h
     }
 
+    /// Smallest rectangle holding both.
+    pub fn union(&self, o: &Rect) -> Rect {
+        let (x, y) = (self.x.min(o.x), self.y.min(o.y));
+        Rect::new(
+            x,
+            y,
+            self.right().max(o.right()) - x,
+            self.bottom().max(o.bottom()) - y,
+        )
+    }
+
     pub fn contains(&self, o: &Rect) -> bool {
         o.x >= self.x && o.y >= self.y && o.right() <= self.right() && o.bottom() <= self.bottom()
     }

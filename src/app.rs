@@ -1,11 +1,16 @@
 use crate::{
     capture::{CaptureBackend, CaptureRequest, wlr::WlrBackend},
     config::{Config, Lock, Paths},
-    hypr, ui,
+    hypr,
+    ui::{self, overlay::Overlay},
 };
 use anyhow::{Context, Result};
 use gtk::{glib, prelude::*};
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 pub fn run() -> glib::ExitCode {
     let app = gtk::Application::builder()
@@ -13,14 +18,21 @@ pub fn run() -> glib::ExitCode {
         .build();
     let failed = Rc::new(Cell::new(false));
     let flag = failed.clone();
+    let overlay: Rc<RefCell<Weak<Overlay>>> = Rc::default();
     app.connect_activate(move |app| {
-        // A second launch reaches the running instance; one overlay is enough.
-        if app.active_window().is_some() || !app.windows().is_empty() {
+        // A second launch reaches the running instance: it stops a recording,
+        // otherwise one overlay is enough. A preview does not block a new one.
+        let current = overlay.borrow().upgrade();
+        if let Some(o) = current.filter(|o| !o.previewing()) {
+            o.stop_recording();
             return;
         }
-        if let Err(e) = open(app) {
-            eprintln!("flick: {e:#}");
-            flag.set(true);
+        match open(app) {
+            Ok(o) => *overlay.borrow_mut() = Rc::downgrade(&o),
+            Err(e) => {
+                eprintln!("flick: {e:#}");
+                flag.set(true);
+            }
         }
     });
     let code = app.run_with_args::<&str>(&[]);
@@ -31,7 +43,7 @@ pub fn run() -> glib::ExitCode {
     }
 }
 
-fn open(app: &gtk::Application) -> Result<()> {
+fn open(app: &gtk::Application) -> Result<Rc<Overlay>> {
     anyhow::ensure!(
         gtk4_layer_shell::is_supported(),
         "the compositor does not support layer-shell"
@@ -62,6 +74,7 @@ fn open(app: &gtk::Application) -> Result<()> {
         output: output.name.clone(),
         region: None,
         cursor: false,
+        interval: Duration::ZERO,
     })?;
     ui::overlay::open(app, frame, output, lock.map(|l| l.region), config, paths)
 }

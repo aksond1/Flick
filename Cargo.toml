@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.105"
 clap = { version = "4.6.9", features = ["derive"] }
 directories = "6.0.0"
+gst = { version = "0.25", package = "gstreamer" }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
 gtk4-layer-shell = "0.9"
 png = "0.18.1"

@@ -58,6 +58,7 @@ enum Drag {
     Resize(Rect, Edges, (i32, i32)),
 }
 
+#[derive(Clone)]
 pub struct Selection {
     screen: Rect,
     pub region: Option<Rect>,
@@ -161,6 +162,15 @@ impl Selection {
                 Drag::New(self.clamp(p))
             }
         });
+        true
+    }
+
+    /// Starts moving the region from a point outside it.
+    pub fn begin_move(&mut self, p: (i32, i32)) -> bool {
+        let Some(r) = self.region.filter(|_| !self.locked) else {
+            return false;
+        };
+        self.drag = Some(Drag::Move(r, p));
         true
     }
 
@@ -313,6 +323,18 @@ mod tests {
         // Even a tiny region can be moved by its middle.
         s.region = Some(Rect::new(100, 100, 8, 8));
         assert!(s.moves_at((104, 104)));
+    }
+
+    #[test]
+    fn the_grip_moves_without_resizing() {
+        let mut s = Selection::new(SCREEN, None);
+        drag(&mut s, (100, 100), (300, 200));
+        assert!(s.begin_move((400, 250)));
+        s.update((450, 260));
+        s.end();
+        assert_eq!(s.region, Some(Rect::new(150, 110, 200, 100)));
+        s.locked = true;
+        assert!(!s.begin_move((0, 0)));
     }
 
     #[test]
