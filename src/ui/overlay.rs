@@ -11,6 +11,8 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::{cell::RefCell, rc::Rc};
 
 const GAP: i32 = 8;
+/// Accent color (blue, #1a73e8), shared with the CSS below.
+const ACCENT: (f64, f64, f64) = (0.1, 0.45, 0.91);
 const CSS: &str = "
 window.flick-overlay { background: transparent; }
 .flick-toolbar { background: #202124; border-radius: 10px; padding: 6px; }
@@ -152,6 +154,7 @@ fn connect(o: &Rc<Overlay>) {
                 Some((_, 0)) => "ew-resize",
                 Some((x, y)) if x == y => "nwse-resize",
                 Some(_) => "nesw-resize",
+                None if s.moves_at(point(x, y)) => "move",
                 None => "crosshair",
             };
             o.canvas.set_cursor_from_name(Some(name));
@@ -242,6 +245,7 @@ impl Overlay {
 
     fn draw(&self, cr: &cairo::Context, w: i32, h: i32) -> Result<(), cairo::Error> {
         let s = self.selection.borrow();
+        let (ar, ag, ab) = ACCENT;
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
         cr.rectangle(0.0, 0.0, w.into(), h.into());
         if let Some(r) = s.region {
@@ -250,7 +254,7 @@ impl Overlay {
         }
         cr.fill()?;
         let Some(r) = s.region else { return Ok(()) };
-        cr.set_source_rgb(0.1, 0.45, 0.91);
+        cr.set_source_rgb(ar, ag, ab);
         cr.set_line_width(2.0);
         cr.rectangle(
             f64::from(r.x) - 1.0,
@@ -259,6 +263,23 @@ impl Overlay {
             f64::from(r.h) + 2.0,
         );
         cr.stroke()?;
+        cr.set_line_width(1.0);
+        cr.set_dash(&[6.0, 5.0], 0.0);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.7);
+        for ([a, b], _) in s.guides() {
+            cr.move_to(f64::from(a.0) + 0.5, f64::from(a.1) + 0.5);
+            cr.line_to(f64::from(b.0) + 0.5, f64::from(b.1) + 0.5);
+        }
+        cr.stroke()?;
+        cr.set_dash(&[], 0.0);
+        for ((x, y), _) in s.handles() {
+            cr.arc(x.into(), y.into(), 5.0, 0.0, std::f64::consts::TAU);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.fill_preserve()?;
+            cr.set_source_rgb(ar, ag, ab);
+            cr.set_line_width(2.0);
+            cr.stroke()?;
+        }
         if s.dragging() {
             let p = self.pixels(r);
             let text = format!("{} × {}", p.w, p.h);

@@ -1,4 +1,5 @@
 //! Test helper: drives a virtual pointer. Use only inside a nested compositor.
+//! `VPTR_SIZE=WxH` is the output size, 1920x1080 by default.
 //! Steps: `m X Y` move, `d` press, `u` release, `s MS` sleep.
 use std::{env, thread::sleep, time::Duration};
 use wayland_client::{
@@ -35,7 +36,9 @@ delegate_noop!(State: Manager);
 delegate_noop!(State: Pointer);
 
 fn main() {
-    let (w, h) = (1920, 1080);
+    let size = env::var("VPTR_SIZE").unwrap_or("1920x1080".into());
+    let (w, h) = size.split_once('x').unwrap();
+    let (w, h): (u32, u32) = (w.parse().unwrap(), h.parse().unwrap());
     let conn = Connection::connect_to_env().unwrap();
     let mut q = conn.new_event_queue();
     conn.display().get_registry(&q.handle(), ());
