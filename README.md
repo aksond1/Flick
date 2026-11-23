@@ -1,89 +1,89 @@
 # Flick
 
-Скріншоти й запис відео виділеної області екрана для Hyprland (Wayland). Написано на Rust і GTK4.
+Region screenshots and screen recording for Hyprland (Wayland), written in Rust with GTK4.
 
-Усе відбувається прямо в області виділення: вибір, редагування, запис і перегляд, без окремих вікон.
+Everything happens inside the selected region: selecting, editing, recording and playback, with no separate windows.
 
-> Проєкт у розробці. Готові скріншоти, запис, перегляд і редактор. Вікна налаштувань ще немає: параметри задаються у файлі конфігурації.
+> Work in progress. Screenshots, recording, preview and the editor are ready. There is no settings UI yet; options are set in the config file.
 
-## Можливості
+## Features
 
-- **Виділення:** екран заморожується, область можна переміщувати й розтягувати за 8 маркерів або їхні пунктирні лінії.
-- **Lock:** закріплює область, і наступного разу Flick відкриється одразу з нею.
-- **Скріншот:** копіювання в буфер або збереження у PNG.
-- **Запис:** відео із системним звуком; область можна переміщувати під час запису.
-- **Перегляд:** відео грає в самій області; перемотування, гучність, збереження, копіювання файлу.
-- **Редактор:** пензлик і текст, будь-який колір, шрифт, розмір, undo, redo, очищення.
+- **Selection:** the screen freezes; move the region or resize it with 8 handles or their dashed lines.
+- **Lock:** pins the region, so the next launch opens with it right away.
+- **Screenshots:** copy to the clipboard or save as PNG.
+- **Recording:** video with system audio; the region can be moved while recording.
+- **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
+- **Editor:** brush and text, any color, font, size, undo, redo, clear.
 
-## Встановлення
+## Installation
 
-Залежності (Arch Linux):
+Dependencies (Arch Linux):
 
 ```sh
 sudo pacman -S --needed gtk4 gtk4-layer-shell gst-plugin-gtk4 gst-plugins-base \
   gst-plugins-good gst-libav ffmpeg wl-clipboard pipewire-pulse
 ```
 
-Для збирання також потрібен Rust (edition 2024).
+Building also requires Rust (edition 2024).
 
 ```sh
 cargo build --release
 ./target/release/flick
 ```
 
-Запуск зручно прив'язати до клавіші в конфігурації Hyprland.
+It is handy to bind this to a key in your Hyprland config.
 
-## Використання
+## Usage
 
-Запустіть `flick`, виділіть область мишкою й оберіть дію на панелі:
+Run `flick`, select a region with the mouse and choose an action on the toolbar:
 
-| Кнопка | Дія |
+| Button | Action |
 |---|---|
-| Settings | Ще не реалізовано |
-| Lock | Закріпити або відкріпити область |
-| Play | Почати запис; ще раз — зупинити й переглянути |
-| Edit | Відкрити редактор |
-| Copy | Скопіювати зображення й закрити |
-| Download | Зберегти зображення й закрити |
+| Settings | Not implemented yet |
+| Lock | Pin or unpin the region |
+| Play | Start recording; press again to stop and preview |
+| Edit | Open the editor |
+| Copy | Copy the image and close |
+| Download | Save the image and close |
 
-| Клавіша | Дія |
+| Key | Action |
 |---|---|
-| Esc | Закрити; у редакторі — завершити текст або вийти з редактора |
-| Пробіл | Пауза або відтворення під час перегляду |
-| Ctrl+Z | Скасувати (редактор) |
-| Ctrl+Y, Ctrl+Shift+Z | Повторити (редактор) |
+| Esc | Close; in the editor, finish the text or leave the editor |
+| Space | Pause or play during preview |
+| Ctrl+Z | Undo (editor) |
+| Ctrl+Y, Ctrl+Shift+Z | Redo (editor) |
 
-- Повторний запуск `flick` під час запису зупиняє його. Це єдиний спосіб, коли область займає весь екран і панелі ніде з'явитися.
-- Під час запису область переміщує ручка з крапками на панелі; змінити розмір не можна.
-- Анотації редактора враховуються в Copy і Download, але не потрапляють у відео.
+- Launching `flick` again while recording stops it. This is the only way when the region fills the screen and there is no room for the toolbar.
+- While recording, move the region with the dotted grip on the toolbar; it cannot be resized.
+- Editor annotations are included by Copy and Download, but not in videos.
 
-### Без інтерфейсу
+### Headless
 
 ```sh
 flick outputs
-flick shot --region 0,0,400,300 --file a.png    # без --file — у буфер
+flick shot --region 0,0,400,300 --file a.png    # without --file: clipboard
 flick record --region 0,0,400,300 --seconds 5 --file a.mp4
 ```
 
-## Налаштування
+## Configuration
 
-`~/.config/flick/config.toml` (усі поля необов'язкові):
+`~/.config/flick/config.toml` (every field is optional):
 
 ```toml
-save_dir = "/home/me/Pictures/Flick"  # типово: Flick у теці зображень
+save_dir = "/home/me/Pictures/Flick"  # default: Flick in your pictures directory
 fps = 30
-audio = true          # системний звук
-cursor = true         # курсор у відео
-video_format = "mp4"  # mp4, webm або gif; застосовується при збереженні
+audio = true          # system audio
+cursor = true         # pointer in videos
+video_format = "mp4"  # mp4, webm or gif; applied when saving
 ```
 
-## Обмеження
+## Limitations
 
-- Потрібен композитор із `wlr-layer-shell` і `wlr-screencopy`; перевірено лише на Hyprland. X11, GNOME і KDE не підтримуються.
-- Мікрофона й апаратного кодування немає (відео кодує x264).
-- Кілька моніторів і дробовий масштаб ще повністю не перевірено.
+- Requires a compositor with `wlr-layer-shell` and `wlr-screencopy`; tested only on Hyprland. X11, GNOME and KDE are not supported.
+- No microphone and no hardware encoding (video is encoded with x264).
+- Multiple monitors and fractional scaling are not fully tested yet.
 
-## Розробка
+## Development
 
 ```sh
 cargo fmt --check
@@ -91,4 +91,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Архітектура й тестування інтерфейсу описані в [CLAUDE.md](CLAUDE.md).
+Architecture and UI testing are described in [CLAUDE.md](CLAUDE.md).
