@@ -13,8 +13,8 @@ Flow: `flick` freezes the screen and the user drags a region. Then, depending on
 Work follows staged milestones:
 
 - **0-3 (done):** capture, frozen overlay, selection, Copy, Download, Lock, Esc; recording with system audio (stop by the button or by launching `flick` again) and an in-region preview; an in-region editor (brush, text, undo, redo, clear).
-- **4 (done):** the settings window, launch behaviors (main, alternative), Quit behavior, Hyprland keybindings.
-- **5:** multi-monitor and fractional scaling, 60 FPS, notifications, PKGBUILD.
+- **4 (done):** the settings window, launch behaviors (main, alternative), Quit behavior, Hyprland keybindings, microphone, optional guide lines, moving a locked region.
+- **5:** multi-monitor and fractional scaling, 60 FPS under load (already selectable), notifications, PKGBUILD.
 
 The spec for the settings is the user's note `~/repos/Obsidian/Flick/Settings.md`. Hardware encoding is intentionally excluded. GIF/WebM export was dropped: videos are MP4 only.
 
@@ -64,12 +64,12 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 
 ## Testing the UI
 
-Do not inject input into the user's live session. Run a nested `Hyprland -c <config>` with `HYPRLAND_NO_SD_VARS=1 HYPRLAND_NO_SD_NOTIFY=1` under `dbus-run-session`, and run Flick there with `GTK_A11Y=none GDK_DEBUG=no-portals` and private `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME`. Also use a private `XDG_RUNTIME_DIR` (a short path, e.g. `mktemp -d /run/user/$UID/fk.XXXXXX`, because socket paths are limited to about 108 bytes) and pass the host socket as an absolute path in `WAYLAND_DISPLAY`: a private D-Bus alone let the accessibility service overwrite the real session's `at-spi` socket.
+Do not inject input into the user's live session. Run a nested `Hyprland -c <config>` with `HYPRLAND_NO_SD_VARS=1 HYPRLAND_NO_SD_NOTIFY=1` on a private bus (`dbus-daemon --session --address=unix:path=$RT/bus --fork`, its address in `DBUS_SESSION_BUS_ADDRESS` for both Hyprland and Flick), and run Flick there with `GTK_A11Y=none GDK_DEBUG=no-portals` and private `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME`. Also use a private `XDG_RUNTIME_DIR` (a short path, e.g. `mktemp -d /run/user/$UID/fk.XXXXXX`, because socket paths are limited to about 108 bytes) and pass the host socket as an absolute path in `WAYLAND_DISPLAY`: a private D-Bus alone let the accessibility service overwrite the real session's `at-spi` socket.
 
 The nested window is tiled by the host, so its output size and scale vary. Wait about 12 s after start, read the size from `flick outputs` and pass it as `VPTR_SIZE`; pointer coordinates are then physical pixels.
 
 Programs that the nested Hyprland starts (its keybindings run `flick`) get Hyprland's environment, not yours, so put `hl.env("GDK_DEBUG", "no-portals")`, the private `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` of a private `dbus-daemon` into the nested config. Otherwise GTK's file dialog goes through `xdg-desktop-portal` on the nested bus, and that portal inherited the host's `WAYLAND_DISPLAY`: the dialog opened in the user's real session. Kill only processes whose environment has the private `XDG_RUNTIME_DIR`; `pkill -f flick` also matches your own shell.
 
-For audio, run private `pipewire`, `wireplumber -p policy` and `pipewire-pulse` in that runtime directory with a `module-null-sink` as the default sink, so the user's audio is never touched.
+Set `audio = false` in the test config unless you set up audio as below; ffmpeg fails without a PulseAudio server. For audio, run private `pipewire`, `wireplumber -p policy` and `pipewire-pulse` in that runtime directory with a `module-null-sink` as the default sink, so the user's audio is never touched.
 
 `examples/vptr.rs` (virtual mouse; steps as arguments) and `examples/vesc.rs` (keyboard; takes a file from `xkbcli compile-keymap` and evdev codes with `c`/`a`/`s` prefixes for Ctrl/Alt/Shift, e.g. `a99` is Alt+Print; Escape by default) drive it. Hyprland 0.57 parses its config as Lua, so `.conf` syntax such as `monitor=` fails. Wait a second or so after a click before taking a screenshot, since the UI may not have redrawn.

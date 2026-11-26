@@ -8,14 +8,14 @@ Everything happens inside the selected region: selecting, editing, recording and
 
 ## Features
 
-- **Selection:** the screen freezes; move the region or resize it with 8 handles or their dashed lines.
-- **Lock:** pins the region, so the next launch opens with it right away.
+- **Selection:** the screen freezes; move the region or resize it with 8 handles or their dashed guide lines (which can be turned off).
+- **Lock:** pins the region, so the next launch opens with it right away; a pinned region can still be moved.
 - **Screenshots:** copy to the clipboard or save as PNG.
-- **Recording:** video with system audio and the microphone; the region can be moved while recording.
+- **Recording:** MP4 with system audio and, optionally, the microphone; the region can be moved while recording.
 - **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
 - **Two keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix). With a locked region, a behavior that does not show the toolbar shoots at once, with no UI.
-- **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, what Esc does, recording options.
+- **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, file names, what Esc does, guide lines, frame rate, audio, microphone, pointer.
 
 ## Installation
 
@@ -30,10 +30,12 @@ Building also requires Rust (edition 2024).
 
 ```sh
 cargo build --release
-./target/release/flick
+install -Dm755 target/release/flick ~/.local/bin/flick   # any directory in PATH
 ```
 
-Then run `flick settings` and press **Load in Hyprland**: Flick writes its keybindings to `~/.config/hypr/flick.lua` (or `flick.conf`) and adds one line to your config that loads it. Remove other bindings on the same keys, such as an old `Print` screenshot bind; the settings window warns about them.
+Then run `flick settings` and press **Load in Hyprland**: Flick writes its keybindings to `~/.config/hypr/flick.lua` (or `flick.conf`) and adds one line to your config that loads it. From then on the settings keep that file up to date and reload Hyprland themselves. Remove other bindings on the same keys, such as an old `Print` screenshot bind; the settings window warns about them.
+
+When `flick` is not in `PATH`, the bindings use the full path of the binary that wrote them, so run `flick settings` again after moving it.
 
 ## Usage
 
