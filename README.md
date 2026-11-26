@@ -108,14 +108,15 @@ open = true
 key = "SHIFT + Print"
 copy = true
 save = true
+ask = false              # ask where to save every fastshot
 
 [screenshots]
 dir = "/home/me/Pictures/Flick"  # default: Flick in your pictures directory
-ask = false                      # ask where to save every time
+ask = false                      # Download asks where to save
 
 [recordings]
 dir = "/home/me/Videos/Flick"    # default: Flick in your videos directory
-ask = false
+ask = false                      # every save asks where
 ```
 
 The main and the alternative behavior must differ, one of them must show the toolbar, and the keys must differ. Videos are saved as MP4; copying a recording saves it first, because the clipboard holds the file.

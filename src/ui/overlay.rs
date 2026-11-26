@@ -388,7 +388,7 @@ fn connect(o: &Rc<Overlay>) {
         let weak = Rc::downgrade(o);
         b.connect_clicked(move |_| {
             if let Some(o) = weak.upgrade() {
-                o.deliver(Action::new(true, false), true);
+                o.deliver(Action::new(true, false), true, false);
             }
         });
     }
@@ -396,7 +396,9 @@ fn connect(o: &Rc<Overlay>) {
         let weak = Rc::downgrade(o);
         b.connect_clicked(move |_| {
             if let Some(o) = weak.upgrade() {
-                o.deliver(Action::new(false, true), true);
+                // Only this button asks where to save screenshots.
+                let ask = o.config.borrow().screenshots.ask;
+                o.deliver(Action::new(false, true), true, ask);
             }
         });
     }
@@ -615,7 +617,7 @@ impl Overlay {
         // What the selection did then now includes the annotations.
         let b = self.behavior();
         if leaving && b.open && b.action.any() && self.completed.get().is_some() {
-            self.deliver(b.action, false);
+            self.deliver(b.action, false, false);
         }
     }
 
@@ -907,10 +909,12 @@ impl Overlay {
             return;
         }
         self.completed.set(region);
+        // A fastshot without a lock comes here after selecting.
+        let ask = self.launch == Launch::Fastshot && self.config.borrow().fastshot.ask;
         if !b.open {
-            self.deliver(b.action, true);
+            self.deliver(b.action, true, ask);
         } else if b.action.any() {
-            self.deliver(b.action, false);
+            self.deliver(b.action, false, false);
         }
     }
 
@@ -918,15 +922,15 @@ impl Overlay {
     fn quit(self: &Rc<Self>) {
         let action = self.config.borrow().quit;
         if action.any() && self.selection.borrow().region.is_some() {
-            self.deliver(action, true);
+            self.deliver(action, true, false);
         } else {
             self.window.close();
         }
     }
 
-    /// Copies and saves the region, then closes if asked. Once saved, every
-    /// later delivery refreshes the same file.
-    fn deliver(self: &Rc<Self>, action: Action, close: bool) {
+    /// Copies and saves the region, then closes if asked. `ask` asks where to
+    /// save; otherwise, once saved, every later delivery refreshes the same file.
+    fn deliver(self: &Rc<Self>, action: Action, close: bool, ask: bool) {
         if self.asking.get() {
             return;
         }
@@ -951,7 +955,7 @@ impl Overlay {
             Ok(d) => d,
             Err(e) => return self.failed(e),
         };
-        if existing.is_some() || !c.screenshots.ask {
+        if !(ask && action.save) {
             let r = match existing {
                 Some(p) => save::write(&p, &png).map(|()| p),
                 None => save::write_new(&dir, &c.file_name, "png", &png),

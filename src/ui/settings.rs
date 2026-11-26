@@ -335,6 +335,17 @@ impl Settings {
             let a = Action::FASTSHOT[i].0;
             (c.fastshot.copy, c.fastshot.save) = (a.copy, a.save);
         });
+        let sw = gtk::Switch::new();
+        sw.set_active(c.fastshot.ask);
+        row(
+            &list,
+            "Always ask where to save",
+            Some(
+                "Instead of saving to the screenshot folder. Ignored when the action only copies.",
+            ),
+            &[sw.upcast_ref()],
+        );
+        self.on_switch(&sw, |c, on| c.fastshot.ask = on);
 
         let list = group(page, "Hyprland", None);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -414,7 +425,10 @@ impl Settings {
             });
             let subtitle = match video {
                 true => "Instead of saving to the folder.",
-                false => "Instead of saving to the folder. Fastshots always use the folder.",
+                false => {
+                    "When you press Download. Saving after selecting or on closing \
+                          uses the folder."
+                }
             };
             row(
                 &list,

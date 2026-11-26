@@ -102,8 +102,8 @@ fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<R
     let lock = lock.filter(|l| l.is_valid(&outputs));
     let behavior = config.behavior(launch);
     if let Some(l) = lock.as_ref().filter(|_| !behavior.open) {
-        // Fastshots always use the folder.
-        let ask = launch != Launch::Fastshot && config.screenshots.ask;
+        // Only fastshots ask here; screenshots ask on the Download button.
+        let ask = launch == Launch::Fastshot && config.fastshot.ask;
         shoot(app, &mut backend, l, behavior.action, ask, &config)?;
         return Ok(None);
     }

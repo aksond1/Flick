@@ -230,6 +230,9 @@ pub struct Fastshot {
     pub key: Keybind,
     pub copy: bool,
     pub save: bool,
+    /// Asks where to save each fastshot instead of using the folder.
+    #[serde(default)]
+    pub ask: bool,
 }
 
 impl Fastshot {
@@ -243,7 +246,8 @@ impl Fastshot {
 pub struct Saving {
     /// `None` is Flick in the user's pictures or videos directory.
     pub dir: Option<PathBuf>,
-    /// Asks for a file name on every save instead of using `dir`.
+    /// Asks for a file name instead of using `dir`: screenshots on Download,
+    /// recordings on every save.
     pub ask: bool,
 }
 
@@ -303,6 +307,7 @@ impl Default for Config {
                 key: Keybind::new(Keybind::SHIFT, "Print"),
                 copy: true,
                 save: true,
+                ask: false,
             },
             screenshots: Saving::default(),
             recordings: Saving::default(),
