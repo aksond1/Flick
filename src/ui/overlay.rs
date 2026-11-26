@@ -679,6 +679,12 @@ impl Overlay {
         {
             r.track_video(self.screen);
             self.moves.set(self.moves.get() + 1);
+            // Hyprland sends no motion outside the input region, even to a held
+            // button, so the whole surface takes input until the move ends.
+            *self.input.borrow_mut() = None;
+            if let Some(s) = self.window.surface() {
+                s.set_input_region(None);
+            }
         }
         self.refresh();
     }
