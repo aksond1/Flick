@@ -11,7 +11,7 @@ use crate::{
     config::{Action, Behavior, Config, Launch, Lock, Paths},
     geometry::{Rect, place_panel},
     output::{clipboard, save},
-    record::Recorder,
+    record::{Audio, Recorder},
 };
 use anyhow::{Context, Result};
 use gtk::{cairo, gdk, gio, glib, prelude::*};
@@ -183,7 +183,7 @@ pub fn open(
         moves: Cell::new(0),
         input: RefCell::new(None),
         keep: RefCell::new(None),
-        selection: RefCell::new(Selection::new(screen, locked)),
+        selection: RefCell::new(Selection::new(screen, locked).with_guides(config.guides)),
         window,
         canvas,
         toolbar,
@@ -813,7 +813,11 @@ impl Overlay {
         };
         let backend = Box::new(WlrBackend::connect()?);
         let c = self.config.borrow().clone();
-        let recorder = Recorder::start(backend, req, c.fps, c.audio, file.clone())
+        let audio = Audio {
+            system: c.audio,
+            microphone: c.microphone,
+        };
+        let recorder = Recorder::start(backend, req, c.fps, audio, file.clone())
             .inspect_err(|_| drop(std::fs::remove_file(&file)))?;
         *self.mode.borrow_mut() = Mode::Recording(recorder, Instant::now());
         self.refresh();
@@ -1009,7 +1013,10 @@ impl Overlay {
         settings::open(&self.app, &self.paths, move || {
             let Some(o) = weak.upgrade() else { return };
             match Config::load(&o.paths.config) {
-                Ok(c) => *o.config.borrow_mut() = c,
+                Ok(c) => {
+                    o.selection.borrow_mut().guides = c.guides;
+                    *o.config.borrow_mut() = c;
+                }
                 Err(e) => eprintln!("flick: keeping the previous settings: {e:#}"),
             }
             o.window.set_visible(true);

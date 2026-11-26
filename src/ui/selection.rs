@@ -63,6 +63,8 @@ pub struct Selection {
     screen: Rect,
     pub region: Option<Rect>,
     pub locked: bool,
+    /// Without guides there is nothing to draw or grab beyond the handles.
+    pub guides: bool,
     drag: Option<Drag>,
 }
 
@@ -72,8 +74,14 @@ impl Selection {
             screen,
             region: locked,
             locked: locked.is_some(),
+            guides: true,
             drag: None,
         }
+    }
+
+    pub fn with_guides(mut self, on: bool) -> Self {
+        self.guides = on;
+        self
     }
 
     pub fn dragging(&self) -> bool {
@@ -91,6 +99,9 @@ impl Selection {
     /// One line per handle: corners run to the matching screen corner,
     /// side handles straight to the screen edge.
     pub fn guides(&self) -> Vec<([(i32, i32); 2], Edges)> {
+        if !self.guides {
+            return Vec::new();
+        }
         self.handles()
             .into_iter()
             .map(|(from, e)| {
@@ -267,6 +278,19 @@ mod tests {
             assert_eq!(s.edges_at(((a.0 + b.0) / 2, (a.1 + b.1) / 2)), Some(e));
         }
         assert_eq!(s.edges_at((700, 250)), None);
+    }
+
+    #[test]
+    fn hidden_guides_cannot_be_grabbed() {
+        let s = Selection {
+            region: Some(Rect::new(300, 200, 300, 200)),
+            ..Selection::new(SCREEN, None).with_guides(false)
+        };
+        assert!(s.guides().is_empty());
+        assert_eq!(s.handles().len(), 8);
+        // The middle of the top guide, and the handles still work.
+        assert_eq!(s.edges_at((450, 100)), None);
+        assert_eq!(s.edges_at((300, 200)), Some(Edges { x: -1, y: -1 }));
     }
 
     #[test]

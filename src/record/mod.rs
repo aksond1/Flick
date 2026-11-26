@@ -7,6 +7,7 @@ use crate::{
     geometry::Rect,
 };
 use anyhow::{Context, Result, bail};
+pub use ffmpeg::Audio;
 use ffmpeg::{Encoder, RecordArgs};
 use std::{
     path::PathBuf,
@@ -33,7 +34,7 @@ impl Recorder {
         backend: Box<dyn CaptureBackend>,
         mut req: CaptureRequest,
         fps: u32,
-        audio: bool,
+        audio: Audio,
         output: PathBuf,
     ) -> Result<Self> {
         if !(1..=240).contains(&fps) {

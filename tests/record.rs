@@ -1,6 +1,10 @@
 //! Fake backend -> real ffmpeg -> ffprobe. Needs no display or audio.
 use anyhow::Result;
-use flick::{capture::*, geometry::Rect, record::Recorder};
+use flick::{
+    capture::*,
+    geometry::Rect,
+    record::{Audio, Recorder},
+};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -56,7 +60,7 @@ fn start(file: PathBuf) -> Result<Recorder> {
         cursor: false,
         interval: Duration::ZERO,
     };
-    Recorder::start(Box::new(Fake), req, 30, false, file)
+    Recorder::start(Box::new(Fake), req, 30, Audio::default(), file)
 }
 
 fn dir(name: &str) -> PathBuf {

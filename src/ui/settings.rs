@@ -350,6 +350,19 @@ impl Settings {
         r.set_child(Some(&line));
         list.append(&r);
 
+        let list = group(page, "Selection", None);
+        let sw = gtk::Switch::new();
+        sw.set_active(c.guides);
+        row(
+            &list,
+            "Show guide lines",
+            Some(
+                "Dashed lines from the handles to the screen edges; dragging one resizes the region.",
+            ),
+            &[sw.upcast_ref()],
+        );
+        self.on_switch(&sw, |c, on| c.guides = on);
+
         let list = group(page, "Closing", None);
         let names: Vec<&str> = Action::QUIT.iter().map(|(_, n)| *n).collect();
         let d = dropdown(&names, Action::QUIT.iter().position(|(a, _)| *a == c.quit));
@@ -427,6 +440,15 @@ impl Settings {
             sw.set_active(c.audio);
             row(&list, "Record system audio", None, &[sw.upcast_ref()]);
             self.on_switch(&sw, |c, on| c.audio = on);
+            let sw = gtk::Switch::new();
+            sw.set_active(c.microphone);
+            row(
+                &list,
+                "Record the microphone",
+                Some("The default input device, mixed with the system audio."),
+                &[sw.upcast_ref()],
+            );
+            self.on_switch(&sw, |c, on| c.microphone = on);
             let sw = gtk::Switch::new();
             sw.set_active(c.cursor);
             row(&list, "Show the pointer", None, &[sw.upcast_ref()]);

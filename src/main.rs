@@ -6,7 +6,7 @@ use flick::{
     config::Launch,
     geometry::Rect,
     output::{clipboard, save},
-    record::Recorder,
+    record::{Audio, Recorder},
 };
 use std::{
     path::PathBuf,
@@ -53,8 +53,12 @@ enum Cmd {
         seconds: u64,
         #[arg(long, default_value_t = 30)]
         fps: u32,
+        /// Without system audio
         #[arg(long)]
         no_audio: bool,
+        /// With the microphone
+        #[arg(long)]
+        mic: bool,
     },
 }
 
@@ -143,9 +147,19 @@ fn headless(command: Cmd) -> Result<()> {
             seconds,
             fps,
             no_audio,
+            mic,
         } => {
             let req = request(&mut backend, output, region, true)?;
-            let mut rec = Recorder::start(Box::new(backend), req, fps, !no_audio, file)?;
+            let mut rec = Recorder::start(
+                Box::new(backend),
+                req,
+                fps,
+                Audio {
+                    system: !no_audio,
+                    microphone: mic,
+                },
+                file,
+            )?;
             let end = Instant::now() + Duration::from_secs(seconds);
             while Instant::now() < end && !rec.has_failed() {
                 std::thread::sleep(Duration::from_millis(50));

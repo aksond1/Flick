@@ -256,10 +256,14 @@ pub struct Config {
     pub fps: u32,
     /// System audio in recordings.
     pub audio: bool,
+    /// The default input device in recordings.
+    pub microphone: bool,
     /// The pointer in recordings.
     pub cursor: bool,
     /// Asks before closing a recording that was not saved.
     pub confirm_discard: bool,
+    /// Dashed lines from the handles to the screen edges while selecting.
+    pub guides: bool,
     /// Done by Esc and the close button.
     pub quit: Action,
     pub main: Trigger,
@@ -288,8 +292,10 @@ impl Default for Config {
             file_name: "Flick_%Y-%m-%d_%H-%M-%S".into(),
             fps: 30,
             audio: true,
+            microphone: false,
             cursor: true,
             confirm_discard: true,
+            guides: true,
             quit: Action::NONE,
             main: trigger("Print", Behavior::new(true, true, false)),
             alternative: trigger("ALT + Print", Behavior::new(true, true, true)),

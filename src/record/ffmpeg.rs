@@ -8,12 +8,34 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Sound sources, both read through PipeWire's PulseAudio server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Audio {
+    /// What the speakers play.
+    pub system: bool,
+    /// The default input device.
+    pub microphone: bool,
+}
+
+impl Audio {
+    fn sources(self) -> Vec<&'static str> {
+        [
+            (self.system, "@DEFAULT_MONITOR@"),
+            (self.microphone, "@DEFAULT_SOURCE@"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, s)| s)
+        .collect()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RecordArgs {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    pub audio: bool,
+    pub audio: Audio,
     pub output: PathBuf,
 }
 
@@ -27,19 +49,27 @@ impl RecordArgs {
         let mut a: Vec<OsString> = Vec::new();
         let mut push = |s: &str| a.extend(s.split_whitespace().map(OsString::from));
         push("-hide_banner -loglevel warning -nostats -y");
-        if self.audio {
-            // ffmpeg 9.1 rejects -thread_queue_size before an input.
-            push("-f pulse -i @DEFAULT_MONITOR@");
+        // Audio inputs come first. ffmpeg 9.1 rejects -thread_queue_size before an input.
+        let sources = self.audio.sources();
+        for s in &sources {
+            push(&format!("-f pulse -i {s}"));
         }
         push(&format!(
             "-f rawvideo -pixel_format bgr0 -video_size {}x{} -framerate {} -i pipe:0",
             self.width, self.height, self.fps
         ));
-        push(if self.audio {
-            "-map 1:v -map 0:a -c:a aac -b:a 160k -shortest"
-        } else {
-            "-map 0:v"
+        push(match sources.len() {
+            0 => "-map 0:v",
+            1 => "-map 1:v -map 0:a",
+            // Kept at their own levels; amix would halve each by default.
+            _ => {
+                "-filter_complex [0:a][1:a]amix=inputs=2:duration=longest:normalize=0[a] \
+                 -map 2:v -map [a]"
+            }
         });
+        if !sources.is_empty() {
+            push("-c:a aac -b:a 160k -shortest");
+        }
         push(&format!(
             "-vf crop={w}:{h}:0:0 -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p"
         ));
@@ -142,7 +172,7 @@ fn tail(log: &str) -> &str {
 mod tests {
     use super::*;
 
-    fn args(width: u32, audio: bool) -> Result<String> {
+    fn args(width: u32, audio: Audio) -> Result<String> {
         let a = RecordArgs {
             width,
             height: 101,
@@ -157,10 +187,34 @@ mod tests {
 
     #[test]
     fn arguments() {
-        let a = args(201, true).unwrap();
+        let system = Audio {
+            system: true,
+            microphone: false,
+        };
+        let a = args(201, system).unwrap();
         assert!(a.contains("-video_size 201x101") && a.contains("crop=200:100:0:0"));
         assert!(a.find("-f pulse").unwrap() < a.find("pipe:0").unwrap());
-        assert!(!args(201, false).unwrap().contains("pulse"));
-        assert!(args(1, false).is_err());
+        assert!(a.contains("-map 1:v -map 0:a") && !a.contains("amix"));
+        let none = args(201, Audio::default()).unwrap();
+        assert!(!none.contains("pulse") && none.contains("-map 0:v"));
+        assert!(args(1, Audio::default()).is_err());
+    }
+
+    #[test]
+    fn microphone_alone_and_mixed() {
+        let mic = Audio {
+            system: false,
+            microphone: true,
+        };
+        let a = args(200, mic).unwrap();
+        assert!(a.contains("-i @DEFAULT_SOURCE@") && !a.contains("MONITOR"));
+        assert!(a.contains("-map 1:v -map 0:a"));
+        let both = Audio {
+            system: true,
+            microphone: true,
+        };
+        let a = args(200, both).unwrap();
+        assert!(a.find("@DEFAULT_MONITOR@").unwrap() < a.find("@DEFAULT_SOURCE@").unwrap());
+        assert!(a.contains("amix=inputs=2") && a.contains("-map 2:v -map [a]"));
     }
 }

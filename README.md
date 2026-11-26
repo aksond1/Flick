@@ -11,7 +11,7 @@ Everything happens inside the selected region: selecting, editing, recording and
 - **Selection:** the screen freezes; move the region or resize it with 8 handles or their dashed lines.
 - **Lock:** pins the region, so the next launch opens with it right away.
 - **Screenshots:** copy to the clipboard or save as PNG.
-- **Recording:** video with system audio; the region can be moved while recording.
+- **Recording:** video with system audio and the microphone; the region can be moved while recording.
 - **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
 - **Three keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix) and fastshots of the locked region with no UI at all.
@@ -72,7 +72,7 @@ Behaviors that do not show the toolbar act as soon as the mouse is released; wit
 ```sh
 flick outputs
 flick shot --region 0,0,400,300 --file a.png    # without --file: clipboard
-flick record --region 0,0,400,300 --seconds 5 --file a.mp4
+flick record --region 0,0,400,300 --seconds 5 --file a.mp4   # --mic, --no-audio
 ```
 
 ## Configuration
@@ -83,8 +83,10 @@ The settings window writes `~/.config/flick/config.toml`; every field is optiona
 file_name = "Flick_%Y-%m-%d_%H-%M-%S"  # strftime pattern, no extension
 fps = 30
 audio = true             # system audio
+microphone = false       # default input device, mixed with system audio
 cursor = true            # pointer in videos
 confirm_discard = true   # ask before closing an unsaved recording
+guides = true            # dashed guide lines while selecting
 
 [quit]                   # what Esc and Close do first
 copy = false
@@ -121,7 +123,7 @@ The main and the alternative behavior must differ, one of them must show the too
 ## Limitations
 
 - Requires a compositor with `wlr-layer-shell` and `wlr-screencopy`; tested only on Hyprland. X11, GNOME and KDE are not supported.
-- No microphone and no hardware encoding (video is encoded with x264).
+- No hardware encoding (video is encoded with x264).
 - Multiple monitors and fractional scaling are not fully tested yet.
 
 ## Development
