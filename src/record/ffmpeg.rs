@@ -28,7 +28,8 @@ impl RecordArgs {
         let mut push = |s: &str| a.extend(s.split_whitespace().map(OsString::from));
         push("-hide_banner -loglevel warning -nostats -y");
         if self.audio {
-            push("-thread_queue_size 1024 -f pulse -i @DEFAULT_MONITOR@");
+            // ffmpeg 9.1 rejects -thread_queue_size before an input.
+            push("-f pulse -i @DEFAULT_MONITOR@");
         }
         push(&format!(
             "-f rawvideo -pixel_format bgr0 -video_size {}x{} -framerate {} -i pipe:0",
