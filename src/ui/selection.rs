@@ -154,16 +154,20 @@ impl Selection {
             .map(|(_, e)| e)
     }
 
-    /// Whether dragging from `p` moves the whole region.
+    /// Whether dragging from `p` moves the whole region; a locked one too.
     pub fn moves_at(&self, p: (i32, i32)) -> bool {
         let inside = |r: Rect| p.0 > r.x && p.0 < r.right() && p.1 > r.y && p.1 < r.bottom();
-        !self.locked && self.region.is_some_and(inside) && self.edges_at(p).is_none()
+        self.region.is_some_and(inside) && self.edges_at(p).is_none()
     }
 
-    /// Returns false when the region is locked.
+    /// A locked region can only be moved; false when nothing starts.
     pub fn begin(&mut self, p: (i32, i32)) -> bool {
         if self.locked {
-            return false;
+            let Some(r) = self.region.filter(|_| self.moves_at(p)) else {
+                return false;
+            };
+            self.drag = Some(Drag::Move(r, p));
+            return true;
         }
         self.drag = Some(match (self.region, self.edges_at(p)) {
             (Some(r), Some(e)) => Drag::Resize(r, e, self.clamp(p)),
@@ -178,7 +182,7 @@ impl Selection {
 
     /// Starts moving the region from a point outside it.
     pub fn begin_move(&mut self, p: (i32, i32)) -> bool {
-        let Some(r) = self.region.filter(|_| !self.locked) else {
+        let Some(r) = self.region else {
             return false;
         };
         self.drag = Some(Drag::Move(r, p));
@@ -342,7 +346,7 @@ mod tests {
         drag(&mut s, (850, 730), (850, 730));
         assert_eq!(s.region, Some(Rect::new(800, 700, 200, 100)));
         s.locked = true;
-        assert!(!s.moves_at((850, 730)));
+        assert!(s.moves_at((850, 730)));
         s.locked = false;
         // Even a tiny region can be moved by its middle.
         s.region = Some(Rect::new(100, 100, 8, 8));
@@ -358,16 +362,21 @@ mod tests {
         s.end();
         assert_eq!(s.region, Some(Rect::new(150, 110, 200, 100)));
         s.locked = true;
+        assert!(s.begin_move((0, 0)));
+        s.region = None;
         assert!(!s.begin_move((0, 0)));
     }
 
     #[test]
-    fn locked_region_is_immutable() {
+    fn locked_region_only_moves() {
         let r = Rect::new(10, 10, 50, 50);
         let mut s = Selection::new(SCREEN, Some(r));
         drag(&mut s, (200, 200), (400, 400));
         drag(&mut s, (10, 10), (0, 0));
         assert_eq!(s.region, Some(r));
+        drag(&mut s, (30, 30), (40, 50));
+        assert_eq!(s.region, Some(Rect::new(20, 30, 50, 50)));
+        s.region = Some(r);
         s.locked = false;
         drag(&mut s, (10, 10), (0, 0));
         assert_eq!(s.region, Some(Rect::new(0, 0, 60, 60)));

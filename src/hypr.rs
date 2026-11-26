@@ -110,10 +110,15 @@ impl HyprConfig {
         Ok(())
     }
 
-    pub fn write_binds(&self, config: &Config, program: &str) -> Result<()> {
+    /// Writes the bindings file unless it already matches; true if it changed.
+    pub fn write_binds(&self, config: &Config, program: &str) -> Result<bool> {
         let text = render(self.syntax, config, program);
+        if fs::read_to_string(&self.binds).is_ok_and(|old| old == text) {
+            return Ok(false);
+        }
         fs::write(&self.binds, text)
-            .with_context(|| format!("cannot write {}", self.binds.display()))
+            .with_context(|| format!("cannot write {}", self.binds.display()))?;
+        Ok(true)
     }
 }
 

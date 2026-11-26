@@ -235,9 +235,10 @@ impl Settings {
         s.build(&page);
         s.connect();
         s.show_keys();
-        s.show_hypr(None);
-        s.check_conflicts();
         s.show_problem();
+        // Repairs a bindings file that fell behind the settings.
+        s.apply_keys(false, None);
+        s.check_conflicts();
         s
     }
 
@@ -250,17 +251,23 @@ impl Settings {
             .1
     }
 
-    /// Changes the settings and saves them if they are valid.
-    fn change(&self, f: impl FnOnce(&mut Config)) {
+    /// Changes the settings and, if they are valid, saves them and brings
+    /// Hyprland's bindings in line. Keys can become valid through any change,
+    /// e.g. a behavior that made the settings invalid while keys were swapped.
+    fn change(self: &Rc<Self>, f: impl FnOnce(&mut Config)) {
         f(&mut self.config.borrow_mut());
         self.show_problem();
-        let c = self.config.borrow();
-        if c.problem().is_none()
-            && let Err(e) = c.save(&self.path)
-        {
-            self.problem
-                .set_text(&format!("Cannot save the settings: {e:#}"));
-            self.problem.set_visible(true);
+        let c = self.config.borrow().clone();
+        if c.problem().is_some() {
+            return;
+        }
+        match c.save(&self.path) {
+            Ok(()) => self.apply_keys(false, None),
+            Err(e) => {
+                self.problem
+                    .set_text(&format!("Cannot save the settings: {e:#}"));
+                self.problem.set_visible(true);
+            }
         }
     }
 
@@ -593,7 +600,7 @@ impl Settings {
                 let result = HyprConfig::locate()
                     .ok_or_else(|| anyhow::anyhow!("no Hyprland config found"))
                     .and_then(|h| h.include());
-                s.apply_keys(result.err().map(|e| format!("{e:#}")));
+                s.apply_keys(true, result.err().map(|e| format!("{e:#}")));
             }
         });
         let weak = Rc::downgrade(self);
@@ -691,7 +698,6 @@ impl Settings {
             _ => c.main.key = key,
         });
         self.show_keys();
-        self.apply_keys(None);
     }
 
     fn show_keys(&self) {
@@ -711,20 +717,26 @@ impl Settings {
         }
     }
 
-    /// Writes the bindings file and reloads Hyprland if it loads the file.
-    fn apply_keys(self: &Rc<Self>, error: Option<String>) {
+    /// Writes the bindings file if it is out of date, or always with `force`,
+    /// and then reloads Hyprland if it loads the file.
+    fn apply_keys(self: &Rc<Self>, force: bool, error: Option<String>) {
         let mut error = error;
+        let mut reloaded = false;
         let c = self.config.borrow().clone();
         if let (None, Some(h), None) = (&error, HyprConfig::locate(), c.problem()) {
-            let result = h
-                .write_binds(&c, &hypr::program())
-                .and_then(|()| match h.is_included() {
-                    true => hypr::reload(),
-                    false => Ok(()),
-                });
+            let result = h.write_binds(&c, &hypr::program()).and_then(|changed| {
+                if (changed || force) && h.is_included() {
+                    reloaded = true;
+                    hypr::reload()?;
+                }
+                Ok(())
+            });
             error = result.err().map(|e| format!("{e:#}"));
         }
         self.show_hypr(error);
+        if !reloaded {
+            return;
+        }
         // Hyprland needs a moment to register the new bindings.
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(Duration::from_millis(400), move || {

@@ -49,7 +49,7 @@ Behaviors that do not show the toolbar act as soon as the mouse is released; wit
 | Button | Action |
 |---|---|
 | Settings | Open the settings; the overlay comes back when they close |
-| Lock | Pin or unpin the region |
+| Lock | Pin or unpin the region; a pinned region can still be moved by dragging it, and stays pinned there |
 | Play | Start recording; press again to stop and preview |
 | Edit | Open the editor |
 | Copy | Copy the image and close |

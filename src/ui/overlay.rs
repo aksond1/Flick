@@ -269,6 +269,7 @@ fn connect(o: &Rc<Overlay>) {
                 return;
             }
             o.selection.borrow_mut().end();
+            o.keep_lock();
             o.refresh();
             if o.selecting() && o.selection.borrow().region.is_some() {
                 o.selected();
@@ -320,7 +321,7 @@ fn connect(o: &Rc<Overlay>) {
                     Tool::Brush => "crosshair",
                     Tool::Text => "text",
                 },
-                _ if s.locked => "default",
+                _ if s.locked && !s.moves_at(point(x, y)) => "default",
                 Some((0, _)) => "ns-resize",
                 Some((_, 0)) => "ew-resize",
                 Some((x, y)) if x == y => "nwse-resize",
@@ -459,7 +460,7 @@ impl Overlay {
         // While recording everything stays visible and clear of the capture.
         let recording = self.recording();
         let region = s.region.filter(|_| recording || !s.dragging());
-        self.toolbar.grip.set_visible(recording && !s.locked);
+        self.toolbar.grip.set_visible(recording);
         // Moving the panel along would relayout every frame, and it could get
         // recorded; it disappears and comes back at the new place.
         let moving = recording && s.dragging();
@@ -687,6 +688,7 @@ impl Overlay {
             return;
         }
         self.selection.borrow_mut().end();
+        self.keep_lock();
         self.refresh();
         self.apply_input();
         let (weak, this) = (Rc::downgrade(self), self.moves.get());
@@ -1026,6 +1028,21 @@ impl Overlay {
             o.window.set_visible(true);
             o.refresh();
         });
+    }
+
+    /// A moved locked region stays locked at its new place.
+    fn keep_lock(&self) {
+        let s = self.selection.borrow().clone();
+        let Some(region) = s.region.filter(|_| s.locked) else {
+            return;
+        };
+        let lock = Lock {
+            output: self.output.clone(),
+            region,
+        };
+        if Lock::load(&self.paths.lock).ok().flatten().as_ref() != Some(&lock) {
+            self.report(lock.save(&self.paths.lock));
+        }
     }
 
     fn toggle_lock(&self) -> Result<()> {
