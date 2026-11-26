@@ -12,7 +12,6 @@ use std::{
 pub enum Launch {
     Main,
     Alternative,
-    Fastshot,
     Settings,
 }
 
@@ -22,7 +21,6 @@ impl Launch {
         match self {
             Self::Main => &[],
             Self::Alternative => &["--alt"],
-            Self::Fastshot => &["fastshot"],
             Self::Settings => &["settings"],
         }
     }
@@ -46,13 +44,6 @@ impl Action {
     pub fn any(self) -> bool {
         self.copy || self.save
     }
-
-    /// Choices for fastshots, which must do something.
-    pub const FASTSHOT: [(Self, &str); 3] = [
-        (Self::new(true, false), "Copy"),
-        (Self::new(true, true), "Copy and save"),
-        (Self::new(false, true), "Save"),
-    ];
 
     /// Choices for closing Flick.
     pub const QUIT: [(Self, &str); 4] = [
@@ -224,23 +215,6 @@ impl Trigger {
     }
 }
 
-/// Fastshots work only on a locked region and never show the toolbar.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Fastshot {
-    pub key: Keybind,
-    pub copy: bool,
-    pub save: bool,
-    /// Asks where to save each fastshot instead of using the folder.
-    #[serde(default)]
-    pub ask: bool,
-}
-
-impl Fastshot {
-    pub fn action(&self) -> Action {
-        Action::new(self.copy, self.save)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Saving {
@@ -272,7 +246,6 @@ pub struct Config {
     pub quit: Action,
     pub main: Trigger,
     pub alternative: Trigger,
-    pub fastshot: Fastshot,
     pub screenshots: Saving,
     pub recordings: Saving,
     /// The screenshot directory of older versions.
@@ -303,12 +276,6 @@ impl Default for Config {
             quit: Action::NONE,
             main: trigger("Print", Behavior::new(true, true, false)),
             alternative: trigger("ALT + Print", Behavior::new(true, true, true)),
-            fastshot: Fastshot {
-                key: Keybind::new(Keybind::SHIFT, "Print"),
-                copy: true,
-                save: true,
-                ask: false,
-            },
             screenshots: Saving::default(),
             recordings: Saving::default(),
             save_dir: None,
@@ -329,23 +296,17 @@ impl Config {
         write_toml(path, self)
     }
 
-    /// The behavior of a launch; fastshots never show the toolbar.
     pub fn behavior(&self, launch: Launch) -> Behavior {
         match launch {
             Launch::Alternative => self.alternative.behavior(),
-            Launch::Fastshot => Behavior {
-                action: self.fastshot.action(),
-                open: false,
-            },
             Launch::Main | Launch::Settings => self.main.behavior(),
         }
     }
 
-    pub fn keys(&self) -> [(&Keybind, Launch); 3] {
+    pub fn keys(&self) -> [(&Keybind, Launch); 2] {
         [
             (&self.main.key, Launch::Main),
             (&self.alternative.key, Launch::Alternative),
-            (&self.fastshot.key, Launch::Fastshot),
         ]
     }
 
@@ -364,9 +325,6 @@ impl Config {
         }
         if !main.action.any() && !main.open || !alt.action.any() && !alt.open {
             return Some("A behavior must do something.".into());
-        }
-        if !self.fastshot.action().any() {
-            return Some("A fastshot must copy or save.".into());
         }
         let keys = self.keys();
         for (i, (a, _)) in keys.iter().enumerate() {
@@ -535,6 +493,9 @@ mod tests {
         let c = Config::load(&path).unwrap();
         assert_eq!(c.screenshots.dir.as_deref(), Some(Path::new("/a")));
         assert_eq!(c.screenshot_dir().unwrap(), Path::new("/a"));
+        // Fastshots were removed; their section is ignored.
+        fs::write(&path, "[fastshot]\nkey = \"SHIFT + Print\"\ncopy = true\n").unwrap();
+        assert_eq!(Config::load(&path).unwrap(), Config::default());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -565,10 +526,10 @@ mod tests {
         c.alternative
             .set_behavior(Behavior::new(false, false, true));
         assert_eq!(c.problem(), None);
-        c.fastshot.key = c.main.key.clone();
+        c.alternative.key = c.main.key.clone();
         assert!(c.problem().unwrap().contains("twice"));
         // Unbound keys never clash.
-        c.fastshot.key = Keybind::default();
+        c.alternative.key = Keybind::default();
         c.main.key = Keybind::default();
         assert_eq!(c.problem(), None);
         c.file_name = "a/b".into();
@@ -581,6 +542,5 @@ mod tests {
             assert!(b.open || b.action.any());
             assert!(!Behavior::CHOICES[i + 1..].iter().any(|(c, _)| c == b));
         }
-        assert!(Action::FASTSHOT.iter().all(|(a, _)| a.any()));
     }
 }

@@ -206,7 +206,7 @@ impl Settings {
                 b
             },
         };
-        let keys: Vec<_> = [Launch::Main, Launch::Alternative, Launch::Fastshot]
+        let keys: Vec<_> = [Launch::Main, Launch::Alternative]
             .into_iter()
             .map(|l| (l, key_button()))
             .collect();
@@ -322,37 +322,6 @@ impl Settings {
                 t.set_behavior(Behavior::CHOICES[i].0);
             });
         }
-
-        let list = group(
-            page,
-            "Fastshot",
-            Some(
-                "Takes the locked region at once, without freezing the screen or showing the \
-                 toolbar. With no locked region you select one first.",
-            ),
-        );
-        row(&list, "Keybinding", None, &keys(Launch::Fastshot));
-        let names: Vec<&str> = Action::FASTSHOT.iter().map(|(_, n)| *n).collect();
-        let at = Action::FASTSHOT
-            .iter()
-            .position(|(a, _)| *a == c.fastshot.action());
-        let d = dropdown(&names, at);
-        row(&list, "Action", None, &[d.upcast_ref()]);
-        self.on_selected(&d, |c, i| {
-            let a = Action::FASTSHOT[i].0;
-            (c.fastshot.copy, c.fastshot.save) = (a.copy, a.save);
-        });
-        let sw = gtk::Switch::new();
-        sw.set_active(c.fastshot.ask);
-        row(
-            &list,
-            "Always ask where to save",
-            Some(
-                "Instead of saving to the screenshot folder. Ignored when the action only copies.",
-            ),
-            &[sw.upcast_ref()],
-        );
-        self.on_switch(&sw, |c, on| c.fastshot.ask = on);
 
         let list = group(page, "Hyprland", None);
         let text = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -694,7 +663,6 @@ impl Settings {
     fn set_key(self: &Rc<Self>, launch: Launch, key: Keybind) {
         self.change(|c| match launch {
             Launch::Alternative => c.alternative.key = key,
-            Launch::Fastshot => c.fastshot.key = key,
             _ => c.main.key = key,
         });
         self.show_keys();
@@ -750,8 +718,8 @@ impl Settings {
         let h = HyprConfig::locate();
         let included = h.as_ref().is_some_and(HyprConfig::is_included);
         let text = match &h {
-            None => "No Hyprland config found. Bind “flick”, “flick --alt” and \
-                     “flick fastshot” yourself."
+            None => "No Hyprland config found. Bind “flick” and “flick --alt” \
+                     yourself."
                 .to_owned(),
             Some(h) if included => format!(
                 "Keybindings are active; Flick keeps them in {}.",

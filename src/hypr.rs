@@ -244,8 +244,7 @@ mod tests {
 
     #[test]
     fn renders_both_syntaxes() {
-        let mut c = Config::default();
-        c.fastshot.key = Keybind::default();
+        let c = Config::default();
         assert_eq!(
             render(Syntax::Lua, &c, "flick"),
             "-- Written by Flick's settings; changes here are overwritten.\n\

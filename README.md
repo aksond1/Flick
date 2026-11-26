@@ -14,7 +14,7 @@ Everything happens inside the selected region: selecting, editing, recording and
 - **Recording:** video with system audio and the microphone; the region can be moved while recording.
 - **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
-- **Three keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix) and fastshots of the locked region with no UI at all.
+- **Two keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix). With a locked region, a behavior that does not show the toolbar shoots at once, with no UI.
 - **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, what Esc does, recording options.
 
 ## Installation
@@ -41,7 +41,6 @@ Then run `flick settings` and press **Load in Hyprland**: Flick writes its keybi
 |---|---|---|
 | `flick` | Print | Main behavior after selecting a region |
 | `flick --alt` | Alt+Print | Alternative behavior |
-| `flick fastshot` | Shift+Print | Copies and/or saves the locked region at once, with no UI; without a lock you select a region first |
 | `flick settings` | | Opens the settings |
 
 Behaviors that do not show the toolbar act as soon as the mouse is released; with a locked region they act at once. Behaviors that show the toolbar can copy or save right after selecting too; later changes and annotations update the same file.
@@ -103,12 +102,6 @@ key = "ALT + Print"
 copy = true
 save = true
 open = true
-
-[fastshot]
-key = "SHIFT + Print"
-copy = true
-save = true
-ask = false              # ask where to save every fastshot
 
 [screenshots]
 dir = "/home/me/Pictures/Flick"  # default: Flick in your pictures directory

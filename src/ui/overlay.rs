@@ -911,10 +911,8 @@ impl Overlay {
             return;
         }
         self.completed.set(region);
-        // A fastshot without a lock comes here after selecting.
-        let ask = self.launch == Launch::Fastshot && self.config.borrow().fastshot.ask;
         if !b.open {
-            self.deliver(b.action, true, ask);
+            self.deliver(b.action, true, false);
         } else if b.action.any() {
             self.deliver(b.action, false, false);
         }

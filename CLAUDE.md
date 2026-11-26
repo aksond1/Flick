@@ -13,12 +13,12 @@ Flow: `flick` freezes the screen and the user drags a region. Then, depending on
 Work follows staged milestones:
 
 - **0-3 (done):** capture, frozen overlay, selection, Copy, Download, Lock, Esc; recording with system audio (stop by the button or by launching `flick` again) and an in-region preview; an in-region editor (brush, text, undo, redo, clear).
-- **4 (done):** the settings window, launch behaviors (main, alternative, fastshot), Quit behavior, Hyprland keybindings.
+- **4 (done):** the settings window, launch behaviors (main, alternative), Quit behavior, Hyprland keybindings.
 - **5:** multi-monitor and fractional scaling, 60 FPS, notifications, PKGBUILD.
 
 The spec for the settings is the user's note `~/repos/Obsidian/Flick/Settings.md`. Hardware encoding is intentionally excluded. GIF/WebM export was dropped: videos are MP4 only.
 
-User decisions: no separate windows except the settings (preview and editor were moved into the region), blue accent `#1a73e8`, no resizing while recording, no "full window size" view (it belonged to an old separate-window design). Commits go to stage branches (`stage-N`).
+User decisions: no fastshots (removed: with a lock, a behavior that does not show the toolbar already shoots at once), no separate windows except the settings (preview and editor were moved into the region), blue accent `#1a73e8`, no resizing while recording, no "full window size" view (it belonged to an old separate-window design). Commits go to stage branches (`stage-N`).
 
 ## Commands
 
@@ -26,7 +26,6 @@ User decisions: no separate windows except the settings (preview and editor were
 cargo build --release
 cargo run                                   # open the overlay (main behavior)
 cargo run -- --alt                          # alternative behavior
-cargo run -- fastshot                       # locked region, no UI
 cargo run -- settings
 cargo run -- outputs                        # headless: list outputs
 cargo run -- shot --region 0,0,400,300 --file a.png   # without --file: clipboard
@@ -55,7 +54,7 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 - **Editor.** Edits in place: `ui/editor/document.rs` holds operations in frame pixels and one cairo function draws both screen and export. Annotations belong to the frozen frame, stay after leaving the editor and are included by Copy and Download. Only popovers work on the overlay (dialogs open underneath), hence the own color picker and font list. Brush and text have separate colors. Escape or a press elsewhere finishes the text being typed, never discards it; undo takes it back. Undo and redo use hardware key codes so they work in any keyboard layout. The text being typed is a `TextView` sized by hand to match the pango rendering. `Stepper` replaces `SpinButton`, whose layout cannot be made compact, and both tools use equally wide controls so the panel keeps its size. Popover key events do not reach the window's key controller.
 - **Launches and behaviors.** `config::Launch` is how Flick was started; GUI launches go through `GApplication` command lines (`HANDLES_COMMAND_LINE`) as plain words (`main`, `alt`, …), kept away from GApplication's own option parsing, so the running instance learns what a second launch wants. `Config::behavior` gives copy/save/open for a launch. A behavior without `open` acts on mouse release (`Overlay::selected`) and closes; with a valid lock it acts in `app::shoot` without any overlay. With `open`, the copy/save runs after each completed selection and again on leaving the editor. Once an overlay has saved a file (`saved`), every later delivery rewrites that file instead of making a new one. `Config::problem` holds the rules (behaviors differ, one shows the toolbar, keys differ); the settings window saves only valid settings.
 - **Quit.** Esc and the toolbar's Close run `config.quit` on the way out (`Overlay::quit`, `Preview::request_close`). For a recording, copying implies saving, since the clipboard holds a file URI.
-- **Save dialogs.** "Always ask where to save" uses `ui::ask_path` (`gtk::FileDialog`). For screenshots it applies only to the Download button (saving after selecting or on Quit uses the folder), fastshots have their own `fastshot.ask`, recordings ask on every save. Dialogs open underneath the overlay, so the overlay window is hidden meanwhile and shown again unless it closes. The same goes for the settings window (`Overlay::open_settings`), after which the overlay reloads the config.
+- **Save dialogs.** "Always ask where to save" uses `ui::ask_path` (`gtk::FileDialog`). For screenshots it applies only to the Download button (saving after selecting or on Quit uses the folder), recordings ask on every save. Dialogs open underneath the overlay, so the overlay window is hidden meanwhile and shown again unless it closes. The same goes for the settings window (`Overlay::open_settings`), after which the overlay reloads the config.
 - **Settings window** (`ui/settings.rs`) is one per process (`CURRENT`), keeps itself alive through `keep` like the overlay, and saves every valid change at once. Typing a keybinding inhibits the compositor's shortcuts (`Toplevel::inhibit_system_shortcuts`) so bound keys reach the window, and translates the keycode without modifiers (Alt+Print is `Sys_Req` otherwise); launches are ignored meanwhile (`settings::is_capturing`).
 - **Hyprland keybindings** (`hypr.rs`): Flick writes `flick.lua` (or `flick.conf` when there is no `hyprland.lua`) next to the user's config, with `description = "flick"` (`bindd` in `.conf`) so `hyprctl binds` tells its own bindings apart for the conflict warning; in Lua mode the bind's `arg` is an opaque id. Adding the `require("flick")` line happens only on the user's click. Every valid save, and opening the window, rewrites the file when it differs from the settings: keys can become valid through any change, not only a key change, and a stale file swapped Print and Alt+Print once. Changes reload Hyprland with `hyprctl reload config-only`.
 - **Styling** is one CSS string in `ui/overlay.rs`, scoped under `.flick-toolbar`; the settings window has its own, scoped under `.flick-settings`, on top of the system theme.

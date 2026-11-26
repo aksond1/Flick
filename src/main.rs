@@ -26,8 +26,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Screenshot the locked region without showing anything
-    Fastshot,
     /// Open the settings window
     Settings,
     /// List outputs
@@ -99,7 +97,6 @@ fn main() -> ExitCode {
     let launch = match (&cli.command, cli.alt) {
         (None, false) => Some(Launch::Main),
         (None, true) => Some(Launch::Alternative),
-        (Some(Cmd::Fastshot), _) => Some(Launch::Fastshot),
         (Some(Cmd::Settings), _) => Some(Launch::Settings),
         _ => None,
     };
@@ -122,7 +119,7 @@ fn main() -> ExitCode {
 fn headless(command: Cmd) -> Result<()> {
     let mut backend = WlrBackend::connect()?;
     match command {
-        Cmd::Fastshot | Cmd::Settings => unreachable!("run by the app"),
+        Cmd::Settings => unreachable!("run by the app"),
         Cmd::Outputs => {
             for o in backend.outputs()? {
                 println!("{} {}x{} scale {}", o.name, o.width, o.height, o.scale);

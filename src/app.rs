@@ -18,7 +18,6 @@ fn token(launch: Launch) -> &'static str {
     match launch {
         Launch::Main => "main",
         Launch::Alternative => "alt",
-        Launch::Fastshot => "fastshot",
         Launch::Settings => "settings",
     }
 }
@@ -36,7 +35,7 @@ pub fn run(launch: Launch) -> glib::ExitCode {
             .arguments()
             .get(1)
             .map(|a| a.to_string_lossy().into_owned());
-        let launch = [Launch::Alternative, Launch::Fastshot, Launch::Settings]
+        let launch = [Launch::Alternative, Launch::Settings]
             .into_iter()
             .find(|l| word.as_deref() == Some(token(*l)))
             .unwrap_or(Launch::Main);
@@ -66,8 +65,6 @@ fn handle(app: &gtk::Application, launch: Launch, overlay: &RefCell<Weak<Overlay
             Some(o) => o.open_settings(),
             None => settings::open(app, &paths, || {}),
         },
-        // The frozen overlay would end up in the picture.
-        Launch::Fastshot if current.as_ref().is_some_and(|o| o.selecting()) => {}
         // A second launch reaches the running instance: it stops a recording,
         // otherwise one overlay is enough. A preview does not block a new one.
         Launch::Main | Launch::Alternative if current.as_ref().is_some_and(|o| !o.previewing()) => {
@@ -102,9 +99,8 @@ fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<R
     let lock = lock.filter(|l| l.is_valid(&outputs));
     let behavior = config.behavior(launch);
     if let Some(l) = lock.as_ref().filter(|_| !behavior.open) {
-        // Only fastshots ask here; screenshots ask on the Download button.
-        let ask = launch == Launch::Fastshot && config.fastshot.ask;
-        shoot(app, &mut backend, l, behavior.action, ask, &config)?;
+        // Screenshots ask where to save only on the Download button.
+        shoot(&mut backend, l, behavior.action, &config)?;
         return Ok(None);
     }
     let wanted = match &lock {
@@ -129,15 +125,8 @@ fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<R
     ui::overlay::open(app, frame, output, locked, launch, config, paths).map(Some)
 }
 
-/// Copies and saves the locked region without showing anything but a save dialog.
-fn shoot(
-    app: &gtk::Application,
-    backend: &mut WlrBackend,
-    lock: &Lock,
-    action: Action,
-    ask: bool,
-    config: &Config,
-) -> Result<()> {
+/// Copies and saves the locked region at once, showing nothing.
+fn shoot(backend: &mut WlrBackend, lock: &Lock, action: Action, config: &Config) -> Result<()> {
     let frame = backend.frame(&CaptureRequest {
         output: lock.output.name.clone(),
         region: Some(lock.region),
@@ -148,27 +137,9 @@ fn shoot(
     if action.copy {
         clipboard::copy_png(&png)?;
     }
-    if !action.save {
-        return Ok(());
-    }
-    let dir = config.screenshot_dir()?;
-    if !ask {
-        let path = save::write_new(&dir, &config.file_name, "png", &png)?;
+    if action.save {
+        let path = save::write_new(&config.screenshot_dir()?, &config.file_name, "png", &png)?;
         println!("{}", path.display());
-        return Ok(());
     }
-    let name = format!("{}.png", save::stem(&config.file_name)?);
-    let (app, hold) = (app.clone(), app.hold());
-    glib::spawn_future_local(async move {
-        let saved = match ui::ask_path(&dir, &name).await {
-            Ok(Some(path)) => save::write(&path, &png).map(|()| println!("{}", path.display())),
-            Ok(None) => Ok(()),
-            Err(e) => Err(e),
-        };
-        if let Err(e) = saved {
-            ui::show_error(&app, &format!("{e:#}"));
-        }
-        drop(hold);
-    });
     Ok(())
 }
