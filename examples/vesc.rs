@@ -1,6 +1,7 @@
 //! Test helper: presses keys on a virtual keyboard. Nested compositor only.
 //! Argument: a compiled XKB keymap (`xkbcli compile-keymap`), then evdev codes
-//! (`c44` is Ctrl+Z); Escape by default.
+//! with prefixes for modifiers: `c` Ctrl, `a` Alt, `s` Shift (`c44` is Ctrl+Z,
+//! `a99` Alt+Print); Escape by default.
 use std::{fs::File, io::Write, os::fd::AsFd, thread::sleep, time::Duration};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
@@ -64,11 +65,16 @@ fn main() {
         codes
     };
     for c in codes {
-        let (ctrl, code) = match c.strip_prefix('c') {
-            Some(code) => (true, code),
-            None => (false, c.as_str()),
-        };
-        k.modifiers(if ctrl { 4 } else { 0 }, 0, 0, 0);
+        let code = c.trim_start_matches(['c', 'a', 's']);
+        let mods = c[..c.len() - code.len()]
+            .chars()
+            .map(|m| match m {
+                'c' => 4,
+                'a' => 8,
+                _ => 1,
+            })
+            .fold(0, |a, b| a | b);
+        k.modifiers(mods, 0, 0, 0);
         for (t, state) in [(1, 1), (60, 0)] {
             k.key(t, code.parse().unwrap(), state);
             q.roundtrip(&mut s).unwrap();

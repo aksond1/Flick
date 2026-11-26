@@ -1,41 +1,52 @@
 use crate::{
-    capture::{CaptureBackend, CaptureRequest, wlr::WlrBackend},
-    config::{Config, Lock, Paths},
+    capture::{CaptureBackend, CaptureRequest, OutputInfo, wlr::WlrBackend},
+    config::{Action, Config, Launch, Lock, Paths},
     hypr,
-    ui::{self, overlay::Overlay},
+    output::{clipboard, save},
+    ui::{self, overlay::Overlay, settings},
 };
 use anyhow::{Context, Result};
-use gtk::{glib, prelude::*};
+use gtk::{gio, glib, prelude::*};
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
     time::Duration,
 };
 
-pub fn run() -> glib::ExitCode {
+/// Passed to the running instance; plain words, which GApplication does not parse.
+fn token(launch: Launch) -> &'static str {
+    match launch {
+        Launch::Main => "main",
+        Launch::Alternative => "alt",
+        Launch::Fastshot => "fastshot",
+        Launch::Settings => "settings",
+    }
+}
+
+pub fn run(launch: Launch) -> glib::ExitCode {
     let app = gtk::Application::builder()
         .application_id("dev.flick.Flick")
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
     let failed = Rc::new(Cell::new(false));
     let flag = failed.clone();
     let overlay: Rc<RefCell<Weak<Overlay>>> = Rc::default();
-    app.connect_activate(move |app| {
-        // A second launch reaches the running instance: it stops a recording,
-        // otherwise one overlay is enough. A preview does not block a new one.
-        let current = overlay.borrow().upgrade();
-        if let Some(o) = current.filter(|o| !o.previewing()) {
-            o.stop_recording();
-            return;
+    app.connect_command_line(move |app, cmd| {
+        let word = cmd
+            .arguments()
+            .get(1)
+            .map(|a| a.to_string_lossy().into_owned());
+        let launch = [Launch::Alternative, Launch::Fastshot, Launch::Settings]
+            .into_iter()
+            .find(|l| word.as_deref() == Some(token(*l)))
+            .unwrap_or(Launch::Main);
+        if let Err(e) = handle(app, launch, &overlay) {
+            ui::show_error(app, &format!("{e:#}"));
+            flag.set(true);
         }
-        match open(app) {
-            Ok(o) => *overlay.borrow_mut() = Rc::downgrade(&o),
-            Err(e) => {
-                eprintln!("flick: {e:#}");
-                flag.set(true);
-            }
-        }
+        glib::ExitCode::SUCCESS
     });
-    let code = app.run_with_args::<&str>(&[]);
+    let code = app.run_with_args(&["flick", token(launch)]);
     if failed.get() {
         glib::ExitCode::FAILURE
     } else {
@@ -43,12 +54,43 @@ pub fn run() -> glib::ExitCode {
     }
 }
 
-fn open(app: &gtk::Application) -> Result<Rc<Overlay>> {
+fn handle(app: &gtk::Application, launch: Launch, overlay: &RefCell<Weak<Overlay>>) -> Result<()> {
+    // The keys being typed into the settings must not start anything.
+    if settings::is_capturing() {
+        return Ok(());
+    }
+    let current = overlay.borrow().upgrade();
+    let paths = Paths::new()?;
+    match launch {
+        Launch::Settings => match current.filter(|o| o.selecting()) {
+            Some(o) => o.open_settings(),
+            None => settings::open(app, &paths, || {}),
+        },
+        // The frozen overlay would end up in the picture.
+        Launch::Fastshot if current.as_ref().is_some_and(|o| o.selecting()) => {}
+        // A second launch reaches the running instance: it stops a recording,
+        // otherwise one overlay is enough. A preview does not block a new one.
+        Launch::Main | Launch::Alternative if current.as_ref().is_some_and(|o| !o.previewing()) => {
+            if let Some(o) = current {
+                o.stop_recording();
+            }
+        }
+        _ => {
+            if let Some(o) = open(app, launch, paths)? {
+                *overlay.borrow_mut() = Rc::downgrade(&o);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Opens the overlay, or shoots the locked region at once when the behavior
+/// does not show the toolbar.
+fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<Rc<Overlay>>> {
     anyhow::ensure!(
         gtk4_layer_shell::is_supported(),
         "the compositor does not support layer-shell"
     );
-    let paths = Paths::new()?;
     let config = Config::load(&paths.config)?;
     let mut backend = WlrBackend::connect()?;
     let outputs = backend.outputs()?;
@@ -58,11 +100,18 @@ fn open(app: &gtk::Application) -> Result<Rc<Overlay>> {
         None
     });
     let lock = lock.filter(|l| l.is_valid(&outputs));
+    let behavior = config.behavior(launch);
+    if let Some(l) = lock.as_ref().filter(|_| !behavior.open) {
+        // Fastshots always use the folder.
+        let ask = launch != Launch::Fastshot && config.screenshots.ask;
+        shoot(app, &mut backend, l, behavior.action, ask, &config)?;
+        return Ok(None);
+    }
     let wanted = match &lock {
         Some(l) => Some(l.output.name.clone()),
         None => hypr::focused_output(),
     };
-    let output = outputs
+    let output: OutputInfo = outputs
         .iter()
         .find(|o| Some(&o.name) == wanted.as_ref())
         .or(outputs.first())
@@ -76,5 +125,50 @@ fn open(app: &gtk::Application) -> Result<Rc<Overlay>> {
         cursor: false,
         interval: Duration::ZERO,
     })?;
-    ui::overlay::open(app, frame, output, lock.map(|l| l.region), config, paths)
+    let locked = lock.map(|l| l.region);
+    ui::overlay::open(app, frame, output, locked, launch, config, paths).map(Some)
+}
+
+/// Copies and saves the locked region without showing anything but a save dialog.
+fn shoot(
+    app: &gtk::Application,
+    backend: &mut WlrBackend,
+    lock: &Lock,
+    action: Action,
+    ask: bool,
+    config: &Config,
+) -> Result<()> {
+    let frame = backend.frame(&CaptureRequest {
+        output: lock.output.name.clone(),
+        region: Some(lock.region),
+        cursor: false,
+        interval: Duration::ZERO,
+    })?;
+    let png = save::encode_png(&frame)?;
+    if action.copy {
+        clipboard::copy_png(&png)?;
+    }
+    if !action.save {
+        return Ok(());
+    }
+    let dir = config.screenshot_dir()?;
+    if !ask {
+        let path = save::write_new(&dir, &config.file_name, "png", &png)?;
+        println!("{}", path.display());
+        return Ok(());
+    }
+    let name = format!("{}.png", save::stem(&config.file_name)?);
+    let (app, hold) = (app.clone(), app.hold());
+    glib::spawn_future_local(async move {
+        let saved = match ui::ask_path(&dir, &name).await {
+            Ok(Some(path)) => save::write(&path, &png).map(|()| println!("{}", path.display())),
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = saved {
+            ui::show_error(&app, &format!("{e:#}"));
+        }
+        drop(hold);
+    });
+    Ok(())
 }

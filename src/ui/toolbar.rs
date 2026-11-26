@@ -1,6 +1,6 @@
 use gtk::prelude::*;
 
-/// The six-button panel shown next to the selected region.
+/// The panel shown next to the selected region.
 pub struct Toolbar {
     pub root: gtk::Box,
     pub settings: gtk::Button,
@@ -9,6 +9,7 @@ pub struct Toolbar {
     pub edit: gtk::Button,
     pub copy: gtk::Button,
     pub download: gtk::Button,
+    pub close: gtk::Button,
     pub time: gtk::Label,
     /// Moves the region while recording.
     pub grip: gtk::Image,
@@ -38,11 +39,10 @@ impl Toolbar {
         let edit = button("document-edit-symbolic", "Edit");
         let copy = button("edit-copy-symbolic", "Copy to clipboard");
         let download = button("folder-download-symbolic", "Save");
-        // Arrives with stage 4.
-        settings.set_sensitive(false);
+        let close = button("window-close-symbolic", "Close");
         row.append(&settings);
         row.append(&lock);
-        for b in [&play, &edit, &copy, &download] {
+        for b in [&play, &edit, &copy, &download, &close] {
             row.append(b);
         }
         let time = gtk::Label::new(Some("00:00"));
@@ -70,6 +70,7 @@ impl Toolbar {
             edit,
             copy,
             download,
+            close,
             time,
             grip,
             error,
@@ -94,7 +95,13 @@ impl Toolbar {
 
     /// While recording only the stop button and the timer remain.
     pub fn show_recording(&self, on: bool) {
-        for b in [&self.settings, &self.edit, &self.copy, &self.download] {
+        for b in [
+            &self.settings,
+            &self.edit,
+            &self.copy,
+            &self.download,
+            &self.close,
+        ] {
             b.set_visible(!on);
         }
         self.lock.set_visible(!on);

@@ -1,13 +1,6 @@
 //! Fake backend -> real ffmpeg -> ffprobe. Needs no display or audio.
 use anyhow::Result;
-use flick::{
-    capture::*,
-    geometry::Rect,
-    record::{
-        Recorder,
-        export::{VideoFormat, export},
-    },
-};
+use flick::{capture::*, geometry::Rect, record::Recorder};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -82,7 +75,7 @@ fn probe(f: &Path, entries: &str) -> String {
 }
 
 #[test]
-fn static_screen_gives_constant_rate_video_and_exports() {
+fn static_screen_gives_constant_rate_video() {
     let d = dir("rec");
     let r = start(d.join("a.mp4")).unwrap();
     std::thread::sleep(Duration::from_secs(2));
@@ -93,11 +86,6 @@ fn static_screen_gives_constant_rate_video_and_exports() {
     );
     let secs: f64 = probe(&f, "format=duration").parse().unwrap();
     assert!((secs - 2.0).abs() < 0.2, "{secs}");
-    for (fmt, codec) in [(VideoFormat::WebM, "vp9"), (VideoFormat::Gif, "gif")] {
-        let out = d.join(format!("o.{}", fmt.extension()));
-        export(&f, &out, fmt).unwrap();
-        assert_eq!(probe(&out, "stream=codec_name"), codec);
-    }
     std::fs::remove_dir_all(d).unwrap();
 }
 

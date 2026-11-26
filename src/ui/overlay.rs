@@ -1,13 +1,14 @@
 use super::{
+    ask_path,
     editor::{Editor, Tool},
     preview::Preview,
     selection::Selection,
-    show_error,
+    settings, show_error,
     toolbar::Toolbar,
 };
 use crate::{
     capture::{CaptureRequest, Frame, OutputInfo, track, wlr::WlrBackend},
-    config::{Config, Lock, Paths},
+    config::{Action, Behavior, Config, Launch, Lock, Paths},
     geometry::{Rect, place_panel},
     output::{clipboard, save},
     record::Recorder,
@@ -17,6 +18,7 @@ use gtk::{cairo, gdk, gio, glib, prelude::*};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::{
     cell::{Cell, OnceCell, RefCell},
+    path::PathBuf,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -103,8 +105,15 @@ pub struct Overlay {
     output: OutputInfo,
     /// Logical size of the output.
     screen: Rect,
-    config: Config,
+    config: RefCell<Config>,
     paths: Paths,
+    launch: Launch,
+    /// This session's screenshot file; later saves replace its content.
+    saved: RefCell<Option<PathBuf>>,
+    /// The region the selection behavior last ran for.
+    completed: Cell<Option<Rect>>,
+    /// A save dialog is open.
+    asking: Cell<bool>,
 }
 
 pub fn open(
@@ -112,6 +121,7 @@ pub fn open(
     frame: Frame,
     output: OutputInfo,
     locked: Option<Rect>,
+    launch: Launch,
     config: Config,
     paths: Paths,
 ) -> Result<Rc<Overlay>> {
@@ -180,8 +190,12 @@ pub fn open(
         frame,
         output,
         screen,
-        config,
+        config: RefCell::new(config),
         paths,
+        launch,
+        saved: RefCell::default(),
+        completed: Cell::new(None),
+        asking: Cell::new(false),
     });
     *o.keep.borrow_mut() = Some(o.clone());
     let weak = Rc::downgrade(&o);
@@ -198,6 +212,15 @@ pub fn open(
     connect(&o);
     o.refresh();
     o.window.present();
+    // A locked region is selected already.
+    if locked.is_some() {
+        let weak = Rc::downgrade(&o);
+        glib::idle_add_local_once(move || {
+            if let Some(o) = weak.upgrade() {
+                o.selected();
+            }
+        });
+    }
     Ok(o)
 }
 
@@ -247,6 +270,9 @@ fn connect(o: &Rc<Overlay>) {
             }
             o.selection.borrow_mut().end();
             o.refresh();
+            if o.selecting() && o.selection.borrow().region.is_some() {
+                o.selected();
+            }
         }
     });
     o.canvas.add_controller(drag);
@@ -318,6 +344,7 @@ fn connect(o: &Rc<Overlay>) {
             return o.editor_key(key, code, state);
         }
         match (key, o.preview()) {
+            (gdk::Key::Escape, None) if o.selecting() => o.quit(),
             (gdk::Key::Escape, _) => o.window.close(),
             (gdk::Key::space, Some(p)) => p.toggle(),
             _ => return glib::Propagation::Proceed,
@@ -340,6 +367,18 @@ fn connect(o: &Rc<Overlay>) {
         }
     });
     let weak = Rc::downgrade(o);
+    o.toolbar.settings.connect_clicked(move |_| {
+        if let Some(o) = weak.upgrade() {
+            o.open_settings();
+        }
+    });
+    let weak = Rc::downgrade(o);
+    o.toolbar.close.connect_clicked(move |_| {
+        if let Some(o) = weak.upgrade() {
+            o.quit();
+        }
+    });
+    let weak = Rc::downgrade(o);
     o.editor().close.connect_clicked(move |_| {
         if let Some(o) = weak.upgrade() {
             o.set_editing(false);
@@ -349,7 +388,7 @@ fn connect(o: &Rc<Overlay>) {
         let weak = Rc::downgrade(o);
         b.connect_clicked(move |_| {
             if let Some(o) = weak.upgrade() {
-                o.close_after(o.copy());
+                o.deliver(Action::new(true, false), true);
             }
         });
     }
@@ -357,7 +396,7 @@ fn connect(o: &Rc<Overlay>) {
         let weak = Rc::downgrade(o);
         b.connect_clicked(move |_| {
             if let Some(o) = weak.upgrade() {
-                o.close_after(o.download());
+                o.deliver(Action::new(false, true), true);
             }
         });
     }
@@ -563,7 +602,8 @@ impl Overlay {
     }
 
     /// Annotations stay when the editor closes; copying and saving include them.
-    fn set_editing(&self, on: bool) {
+    fn set_editing(self: &Rc<Self>, on: bool) {
+        let leaving = self.editing.get() && !on;
         self.editor().commit_text();
         self.editing.set(on);
         self.toolbar.error.set_visible(false);
@@ -572,9 +612,19 @@ impl Overlay {
         self.editor().panel.set_visible(false);
         gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
         self.refresh();
+        // What the selection did then now includes the annotations.
+        let b = self.behavior();
+        if leaving && b.open && b.action.any() && self.completed.get().is_some() {
+            self.deliver(b.action, false);
+        }
     }
 
-    fn editor_key(&self, key: gdk::Key, code: u32, state: gdk::ModifierType) -> glib::Propagation {
+    fn editor_key(
+        self: &Rc<Self>,
+        key: gdk::Key,
+        code: u32,
+        state: gdk::ModifierType,
+    ) -> glib::Propagation {
         let focus = gtk::prelude::GtkWindowExt::focus(&self.window);
         // Fields have their own undo.
         let in_field = focus.is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
@@ -599,7 +649,7 @@ impl Overlay {
         matches!(*self.mode.borrow(), Mode::Recording(..))
     }
 
-    fn selecting(&self) -> bool {
+    pub fn selecting(&self) -> bool {
         matches!(*self.mode.borrow(), Mode::Select)
     }
 
@@ -659,7 +709,8 @@ impl Overlay {
         let close = Rc::downgrade(self);
         let p = Preview::new(
             file,
-            &self.config,
+            &self.config.borrow(),
+            self.window.upcast_ref(),
             move || {
                 if let Some(o) = resize.upgrade() {
                     o.refresh();
@@ -757,11 +808,11 @@ impl Overlay {
         let req = CaptureRequest {
             output: self.output.name.clone(),
             region: Some(region),
-            cursor: self.config.cursor,
+            cursor: self.config.borrow().cursor,
             interval: Duration::ZERO,
         };
         let backend = Box::new(WlrBackend::connect()?);
-        let c = &self.config;
+        let c = self.config.borrow().clone();
         let recorder = Recorder::start(backend, req, c.fps, c.audio, file.clone())
             .inspect_err(|_| drop(std::fs::remove_file(&file)))?;
         *self.mode.borrow_mut() = Mode::Recording(recorder, Instant::now());
@@ -840,20 +891,130 @@ impl Overlay {
         save::encode_png(&frame)
     }
 
-    fn copy(&self) -> Result<()> {
-        clipboard::copy_png(&self.png()?)
+    fn behavior(&self) -> Behavior {
+        self.config.borrow().behavior(self.launch)
     }
 
-    fn download(&self) -> Result<()> {
-        let png = self.png()?;
-        let stem = glib::DateTime::now_local()?.format("Flick_%Y-%m-%d_%H-%M-%S")?;
-        let path = save::unique_path(&self.config.save_dir()?, &stem, "png")?;
-        if let Err(e) = std::fs::write(&path, png) {
-            let _ = std::fs::remove_file(&path);
-            return Err(e).with_context(|| format!("cannot write {}", path.display()));
+    /// Runs the selection behavior once a region is chosen.
+    fn selected(self: &Rc<Self>) {
+        let region = self.selection.borrow().region;
+        let b = self.behavior();
+        if b.open && self.completed.get() == region {
+            return;
         }
-        println!("{}", path.display());
-        Ok(())
+        self.completed.set(region);
+        if !b.open {
+            self.deliver(b.action, true);
+        } else if b.action.any() {
+            self.deliver(b.action, false);
+        }
+    }
+
+    /// Esc and the close button do what the settings say on the way out.
+    fn quit(self: &Rc<Self>) {
+        let action = self.config.borrow().quit;
+        if action.any() && self.selection.borrow().region.is_some() {
+            self.deliver(action, true);
+        } else {
+            self.window.close();
+        }
+    }
+
+    /// Copies and saves the region, then closes if asked. Once saved, every
+    /// later delivery refreshes the same file.
+    fn deliver(self: &Rc<Self>, action: Action, close: bool) {
+        if self.asking.get() {
+            return;
+        }
+        let png = match self.png() {
+            Ok(p) => p,
+            Err(e) => return self.failed(e),
+        };
+        if action.copy
+            && let Err(e) = clipboard::copy_png(&png)
+        {
+            return self.failed(e);
+        }
+        let existing = self.saved.borrow().clone();
+        if !action.save && existing.is_none() {
+            if close {
+                self.window.close();
+            }
+            return;
+        }
+        let c = self.config.borrow().clone();
+        let dir = match c.screenshot_dir() {
+            Ok(d) => d,
+            Err(e) => return self.failed(e),
+        };
+        if existing.is_some() || !c.screenshots.ask {
+            let r = match existing {
+                Some(p) => save::write(&p, &png).map(|()| p),
+                None => save::write_new(&dir, &c.file_name, "png", &png),
+            };
+            return self.saved(r, close);
+        }
+        // Dialogs open underneath the overlay.
+        self.asking.set(true);
+        self.window.set_visible(false);
+        let o = self.clone();
+        glib::spawn_future_local(async move {
+            let name = format!(
+                "{}.png",
+                save::stem(&c.file_name).unwrap_or_else(|_| "Flick".into())
+            );
+            let r = ask_path(&dir, &name).await;
+            o.asking.set(false);
+            match r {
+                Ok(Some(p)) => {
+                    let r = save::write(&p, &png).map(|()| p);
+                    if !close || r.is_err() {
+                        o.window.set_visible(true);
+                    }
+                    o.saved(r, close);
+                }
+                // Cancelled: back to the selection.
+                Ok(None) => o.window.set_visible(true),
+                Err(e) => {
+                    o.window.set_visible(true);
+                    o.failed(e);
+                }
+            }
+        });
+    }
+
+    fn saved(&self, r: Result<PathBuf>, close: bool) {
+        match r {
+            Ok(p) => {
+                println!("{}", p.display());
+                *self.saved.borrow_mut() = Some(p);
+                if close {
+                    self.window.close();
+                }
+            }
+            Err(e) => self.failed(e),
+        }
+    }
+
+    fn failed(&self, e: anyhow::Error) {
+        self.report(Err(e));
+        self.refresh();
+    }
+
+    /// Hides the overlay while the settings window is open, since windows open
+    /// underneath it; the new settings apply when it comes back.
+    pub fn open_settings(self: &Rc<Self>) {
+        self.window.set_visible(false);
+        let weak = Rc::downgrade(self);
+        settings::open(&self.app, &self.paths, move || {
+            let Some(o) = weak.upgrade() else { return };
+            match Config::load(&o.paths.config) {
+                Ok(c) => *o.config.borrow_mut() = c,
+                Err(e) => eprintln!("flick: keeping the previous settings: {e:#}"),
+            }
+            o.window.set_visible(true);
+            o.refresh();
+        });
     }
 
     fn toggle_lock(&self) -> Result<()> {
@@ -870,15 +1031,6 @@ impl Overlay {
         }
         s.locked = !s.locked;
         Ok(())
-    }
-
-    fn close_after(&self, r: Result<()>) {
-        if r.is_ok() {
-            self.window.close();
-        } else {
-            self.report(r);
-            self.refresh();
-        }
     }
 
     fn report(&self, r: Result<()>) {

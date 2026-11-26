@@ -1,8 +1,8 @@
 //! Plays a finished recording inside the region and lets the user keep it.
+use super::ask_path;
 use crate::{
     config::Config,
     output::{clipboard, save},
-    record::export::export,
 };
 use anyhow::{Context, Result};
 use gst::prelude::*;
@@ -93,6 +93,8 @@ pub struct Preview {
     /// Temporary recording, deleted on close.
     temp: PathBuf,
     config: Config,
+    /// The overlay, hidden while a save dialog is open.
+    window: gtk::Window,
     saved: RefCell<Option<PathBuf>>,
     busy: Cell<bool>,
     play: gtk::Button,
@@ -110,6 +112,7 @@ enum After {
     Stay,
     Copy,
     Close,
+    CopyClose,
 }
 
 impl Preview {
@@ -117,6 +120,7 @@ impl Preview {
     pub fn new(
         temp: PathBuf,
         config: &Config,
+        window: &gtk::Window,
         on_resize: impl Fn() + 'static,
         on_close: impl Fn() + 'static,
     ) -> Rc<Self> {
@@ -206,6 +210,7 @@ impl Preview {
             player,
             temp,
             config: config.clone(),
+            window: window.clone(),
             saved: RefCell::new(None),
             busy: Cell::new(false),
             play,
@@ -324,7 +329,7 @@ impl Preview {
 
     fn say(&self, text: &str) {
         self.status.set_text(text);
-        self.status.set_visible(true);
+        self.status.set_visible(!text.is_empty());
         (self.on_resize)();
     }
 
@@ -333,52 +338,91 @@ impl Preview {
         (self.on_resize)();
     }
 
-    /// Exports off the UI thread; an existing copy is reused.
+    /// Copies the recording to its place off the UI thread; an existing copy is reused.
     fn save(self: &Rc<Self>, after: After) {
         if self.busy.replace(true) {
             return;
         }
         self.actions.set_sensitive(false);
         self.confirm.set_visible(false);
-        self.say("Saving…");
         let v = self.clone();
         glib::spawn_future_local(async move {
-            let existing = v.saved.borrow().clone().filter(|p| p.exists());
-            let result = match existing {
-                Some(p) => Ok(p),
-                None => {
-                    let (temp, config) = (v.temp.clone(), v.config.clone());
-                    gio::spawn_blocking(move || save_to_library(&temp, &config))
-                        .await
-                        .unwrap_or_else(|_| Err(anyhow::anyhow!("export panicked")))
-                }
-            };
+            let result = v.place().await;
             v.busy.set(false);
             v.actions.set_sensitive(true);
+            let result = match result {
+                // Cancelled in the dialog.
+                Ok(None) => return v.say(""),
+                Ok(Some(p)) => Ok(p),
+                Err(e) => Err(e),
+            };
+            let closing = matches!(after, After::Close | After::CopyClose);
             let result = result.and_then(|path| {
                 *v.saved.borrow_mut() = Some(path.clone());
-                match after {
-                    After::Copy => clipboard::copy_file(&path)?,
-                    After::Close => v.finish(),
-                    After::Stay => {}
+                if matches!(after, After::Copy | After::CopyClose) {
+                    clipboard::copy_file(&path)?;
+                }
+                if closing {
+                    v.finish();
                 }
                 Ok(path)
             });
             match (result, after) {
                 (Err(e), _) => v.say(&format!("{e:#}")),
-                (Ok(_), After::Close) => {}
+                (Ok(_), After::Close | After::CopyClose) => {}
                 (Ok(p), After::Copy) => v.say(&format!("Copied {}", p.display())),
                 (Ok(p), After::Stay) => v.say(&format!("Saved {}", p.display())),
             }
         });
     }
 
-    /// Closes, or asks first when the recording was not saved.
-    pub fn request_close(&self) {
+    /// Where the recording is kept, copying it there first if needed.
+    async fn place(&self) -> Result<Option<PathBuf>> {
+        if let Some(p) = self.saved.borrow().clone().filter(|p| p.exists()) {
+            return Ok(Some(p));
+        }
+        let c = &self.config;
+        let dir = c.recording_dir()?;
+        let path = if c.recordings.ask {
+            let name = format!("{}.mp4", save::stem(&c.file_name)?);
+            // Dialogs open underneath the overlay.
+            self.window.set_visible(false);
+            let r = ask_path(&dir, &name).await;
+            self.window.set_visible(true);
+            match r? {
+                Some(p) => p,
+                None => return Ok(None),
+            }
+        } else {
+            save::unique_path(&dir, &save::stem(&c.file_name)?, "mp4")?
+        };
+        self.say("Saving…");
+        let (from, to) = (self.temp.clone(), path.clone());
+        let copied = gio::spawn_blocking(move || std::fs::copy(&from, &to))
+            .await
+            .unwrap_or_else(|_| Err(std::io::Error::other("copying panicked")));
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&path);
+            return Err(e).with_context(|| format!("cannot write {}", path.display()));
+        }
+        Ok(Some(path))
+    }
+
+    /// Closes as the settings say: copying or saving first, or asking when an
+    /// unsaved recording would be lost.
+    pub fn request_close(self: &Rc<Self>) {
         if self.busy.get() {
             return;
         }
-        if self.saved.borrow().is_some() {
+        let quit = self.config.quit;
+        if quit.any() {
+            // A copied recording is a file, so copying saves too.
+            self.save(if quit.copy {
+                After::CopyClose
+            } else {
+                After::Close
+            });
+        } else if self.saved.borrow().is_some() || !self.config.confirm_discard {
             self.finish();
         } else {
             // A second request while asking takes the question back.
@@ -394,16 +438,6 @@ impl Preview {
         let _ = std::fs::remove_file(&self.temp);
         (self.on_close)();
     }
-}
-
-fn save_to_library(temp: &Path, config: &Config) -> Result<PathBuf> {
-    let stem = glib::DateTime::now_local()?.format("Flick_%Y-%m-%d_%H-%M-%S")?;
-    let path = save::unique_path(&config.save_dir()?, &stem, config.video_format.extension())?;
-    if let Err(e) = export(temp, &path, config.video_format) {
-        let _ = std::fs::remove_file(&path);
-        return Err(e);
-    }
-    Ok(path)
 }
 
 fn clock(seconds: f64) -> String {

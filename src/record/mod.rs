@@ -1,4 +1,3 @@
-pub mod export;
 pub mod ffmpeg;
 pub mod fit;
 pub mod pacer;

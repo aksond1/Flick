@@ -2,9 +2,9 @@
 
 Region screenshots and screen recording for Hyprland (Wayland), written in Rust with GTK4.
 
-Everything happens inside the selected region: selecting, editing, recording and playback, with no separate windows.
+Everything happens inside the selected region: selecting, editing, recording and playback. Only the settings have a window of their own.
 
-> Work in progress. Screenshots, recording, preview and the editor are ready. There is no settings UI yet; options are set in the config file.
+> Work in progress. Screenshots, recording, preview, the editor and the settings are ready.
 
 ## Features
 
@@ -14,6 +14,8 @@ Everything happens inside the selected region: selecting, editing, recording and
 - **Recording:** video with system audio; the region can be moved while recording.
 - **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
+- **Three keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix) and fastshots of the locked region with no UI at all.
+- **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, what Esc does, recording options.
 
 ## Installation
 
@@ -31,24 +33,32 @@ cargo build --release
 ./target/release/flick
 ```
 
-It is handy to bind this to a key in your Hyprland config.
+Then run `flick settings` and press **Load in Hyprland**: Flick writes its keybindings to `~/.config/hypr/flick.lua` (or `flick.conf`) and adds one line to your config that loads it. Remove other bindings on the same keys, such as an old `Print` screenshot bind; the settings window warns about them.
 
 ## Usage
 
-Run `flick`, select a region with the mouse and choose an action on the toolbar:
+| Command | Default key | Does |
+|---|---|---|
+| `flick` | Print | Main behavior after selecting a region |
+| `flick --alt` | Alt+Print | Alternative behavior |
+| `flick fastshot` | Shift+Print | Copies and/or saves the locked region at once, with no UI; without a lock you select a region first |
+| `flick settings` | | Opens the settings |
+
+Behaviors that do not show the toolbar act as soon as the mouse is released; with a locked region they act at once. Behaviors that show the toolbar can copy or save right after selecting too; later changes and annotations update the same file.
 
 | Button | Action |
 |---|---|
-| Settings | Not implemented yet |
+| Settings | Open the settings; the overlay comes back when they close |
 | Lock | Pin or unpin the region |
 | Play | Start recording; press again to stop and preview |
 | Edit | Open the editor |
 | Copy | Copy the image and close |
 | Download | Save the image and close |
+| Close | Close, copying or saving first if the settings say so |
 
 | Key | Action |
 |---|---|
-| Esc | Close; in the editor, finish the text or leave the editor |
+| Esc | Same as Close; in the editor, finish the text or leave the editor |
 | Space | Pause or play during preview |
 | Ctrl+Z | Undo (editor) |
 | Ctrl+Y, Ctrl+Shift+Z | Redo (editor) |
@@ -67,15 +77,46 @@ flick record --region 0,0,400,300 --seconds 5 --file a.mp4
 
 ## Configuration
 
-`~/.config/flick/config.toml` (every field is optional):
+The settings window writes `~/.config/flick/config.toml`; every field is optional:
 
 ```toml
-save_dir = "/home/me/Pictures/Flick"  # default: Flick in your pictures directory
+file_name = "Flick_%Y-%m-%d_%H-%M-%S"  # strftime pattern, no extension
 fps = 30
-audio = true          # system audio
-cursor = true         # pointer in videos
-video_format = "mp4"  # mp4, webm or gif; applied when saving
+audio = true             # system audio
+cursor = true            # pointer in videos
+confirm_discard = true   # ask before closing an unsaved recording
+
+[quit]                   # what Esc and Close do first
+copy = false
+save = false
+
+[main]
+key = "Print"            # Hyprland notation; "" unbinds
+copy = true
+save = true
+open = false             # show the toolbar
+
+[alternative]
+key = "ALT + Print"
+copy = true
+save = true
+open = true
+
+[fastshot]
+key = "SHIFT + Print"
+copy = true
+save = true
+
+[screenshots]
+dir = "/home/me/Pictures/Flick"  # default: Flick in your pictures directory
+ask = false                      # ask where to save every time
+
+[recordings]
+dir = "/home/me/Videos/Flick"    # default: Flick in your videos directory
+ask = false
 ```
+
+The main and the alternative behavior must differ, one of them must show the toolbar, and the keys must differ. Videos are saved as MP4; copying a recording saves it first, because the clipboard holds the file.
 
 ## Limitations
 

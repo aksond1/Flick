@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use flick::{
     capture::{CaptureBackend, CaptureRequest, wlr::WlrBackend},
+    config::Launch,
     geometry::Rect,
     output::{clipboard, save},
     record::Recorder,
@@ -16,12 +17,19 @@ use std::{
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
+    /// Use the alternative behavior after selecting
+    #[arg(long)]
+    alt: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Screenshot the locked region without showing anything
+    Fastshot,
+    /// Open the settings window
+    Settings,
     /// List outputs
     Outputs,
     /// Capture a PNG to a file, or to the clipboard without --file
@@ -83,8 +91,17 @@ fn request(
 }
 
 fn main() -> ExitCode {
-    let Some(command) = Cli::parse().command else {
-        return match flick::app::run().get() {
+    let cli = Cli::parse();
+    let launch = match (&cli.command, cli.alt) {
+        (None, false) => Some(Launch::Main),
+        (None, true) => Some(Launch::Alternative),
+        (Some(Cmd::Fastshot), _) => Some(Launch::Fastshot),
+        (Some(Cmd::Settings), _) => Some(Launch::Settings),
+        _ => None,
+    };
+    let (Some(command), None) = (cli.command, launch) else {
+        let launch = launch.expect("one of the two");
+        return match flick::app::run(launch).get() {
             0 => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
         };
@@ -101,6 +118,7 @@ fn main() -> ExitCode {
 fn headless(command: Cmd) -> Result<()> {
     let mut backend = WlrBackend::connect()?;
     match command {
+        Cmd::Fastshot | Cmd::Settings => unreachable!("run by the app"),
         Cmd::Outputs => {
             for o in backend.outputs()? {
                 println!("{} {}x{} scale {}", o.name, o.width, o.height, o.scale);
