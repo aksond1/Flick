@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Flick Settings
+Comment=Keybindings, folders and recording options for Flick
+Exec=flick settings
+Icon=applets-screenshooter
+Terminal=false
+Categories=Utility;GTK;
+Keywords=screenshot;screen recording;capture;

@@ -1,0 +1,53 @@
+# Builds the latest commit of Flick from GitHub.
+pkgname=flick-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc='Region screenshots and screen recording for Hyprland'
+arch=('x86_64' 'aarch64')
+url='https://github.com/aksond1/Flick'
+license=('GPL-3.0-or-later')
+depends=(
+  'gtk4' 'gtk4-layer-shell'
+  'gst-plugin-gtk4' 'gst-plugins-base' 'gst-plugins-good' 'gst-libav'
+  'ffmpeg' 'wl-clipboard' 'pipewire-pulse'
+)
+makedepends=('cargo' 'git')
+provides=('flick')
+conflicts=('flick')
+options=('!lto')
+source=('flick::git+https://github.com/aksond1/Flick.git')
+sha256sums=('SKIP')
+
+pkgver() {
+  cd flick
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd flick
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd flick
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd flick
+  export RUSTUP_TOOLCHAIN=stable
+  # Integration tests run ffmpeg with a fake screen, so they need no display.
+  cargo test --frozen --release
+}
+
+package() {
+  cd flick
+  install -Dm755 target/release/flick "$pkgdir/usr/bin/flick"
+  install -Dm644 packaging/flick-settings.desktop \
+    "$pkgdir/usr/share/applications/flick-settings.desktop"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/flick/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

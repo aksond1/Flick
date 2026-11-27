@@ -2,6 +2,9 @@
 name = "flick"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Region screenshots and screen recording for Hyprland"
+repository = "https://github.com/aksond1/Flick"
 
 [dependencies]
 anyhow = "1.0.105"
