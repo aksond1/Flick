@@ -15,7 +15,7 @@ Everything happens inside the selected region: selecting, editing, recording and
 - **Preview:** the video plays inside the region, with seeking and volume; save it, or copy it to the clipboard without saving.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
 - **Two keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix). With a locked region, a behavior that does not show the toolbar shoots at once, with no UI.
-- **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, file names, what Esc does, guide lines, frame rate, audio, microphone, pointer.
+- **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, file names, what Esc does, guide lines, frame rate, audio, microphone, pointer, and Reset to Defaults.
 
 ## Installation
 

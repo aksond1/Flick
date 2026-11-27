@@ -21,6 +21,7 @@ const CSS: &str = "
 .flick-settings .flick-problem { background: #c01c28; color: #ffffff; padding: 8px 14px; }
 .flick-settings .flick-warning { color: #c64600; }
 .flick-settings button.flick-key { min-width: 120px; }
+.flick-settings button.destructive-action { background: #c01c28; color: #ffffff; }
 .flick-settings button.flick-capturing { background: #1a73e8; color: #ffffff; }
 .flick-settings button.suggested-action { background: #1a73e8; color: #ffffff; }
 .flick-settings switch:checked { background: #1a73e8; }
@@ -38,6 +39,8 @@ struct KeyButton {
 
 pub struct Settings {
     window: gtk::ApplicationWindow,
+    /// Holds every group; rebuilt when the settings are reset.
+    page: gtk::Box,
     config: RefCell<Config>,
     path: PathBuf,
     problem: gtk::Label,
@@ -106,7 +109,12 @@ fn group(page: &gtk::Box, title: &str, note: Option<&str>) -> gtk::ListBox {
 }
 
 /// A row with a title, an optional explanation and controls on the right.
-fn row(list: &gtk::ListBox, title: &str, subtitle: Option<&str>, controls: &[&gtk::Widget]) {
+fn row(
+    list: &gtk::ListBox,
+    title: &str,
+    subtitle: Option<&str>,
+    controls: &[&gtk::Widget],
+) -> gtk::ListBoxRow {
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
     text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
@@ -124,6 +132,7 @@ fn row(list: &gtk::ListBox, title: &str, subtitle: Option<&str>, controls: &[&gt
     r.set_activatable(false);
     r.set_child(Some(&line));
     list.append(&r);
+    r
 }
 
 fn saving(c: &mut Config, video: bool) -> &mut Saving {
@@ -219,6 +228,7 @@ impl Settings {
 
         let s = Rc::new(Self {
             window,
+            page: page.clone(),
             config: RefCell::new(config),
             path,
             problem,
@@ -470,6 +480,75 @@ impl Settings {
                 s.change(|c| c.file_name = text);
             }
         });
+
+        // Asked inline, like everything else in Flick.
+        let list = group(page, "Reset", None);
+        let reset = gtk::Button::with_label("Reset to Defaults");
+        row(
+            &list,
+            "Reset to defaults",
+            Some("Every setting above goes back to how Flick ships. A locked region stays."),
+            &[reset.upcast_ref()],
+        );
+        let cancel = gtk::Button::with_label("Cancel");
+        let confirm = gtk::Button::with_label("Reset");
+        confirm.add_css_class("destructive-action");
+        let ask = row(
+            &list,
+            "Reset every setting?",
+            Some("This includes the keybindings, behaviors and folders."),
+            &[cancel.upcast_ref(), confirm.upcast_ref()],
+        );
+        ask.set_visible(false);
+        let shown = ask.clone();
+        reset.connect_clicked(move |_| shown.set_visible(!shown.is_visible()));
+        let shown = ask.clone();
+        cancel.connect_clicked(move |_| shown.set_visible(false));
+        let weak = Rc::downgrade(self);
+        confirm.connect_clicked(move |_| {
+            if let Some(s) = weak.upgrade() {
+                s.reset();
+            }
+        });
+    }
+
+    fn reset(self: &Rc<Self>) {
+        self.capture(None);
+        self.change(|c| *c = Config::default());
+        // Not while the clicked button, which goes away, is still emitting.
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(s) = weak.upgrade() {
+                s.rebuild();
+            }
+        });
+    }
+
+    /// Builds the groups again so every control shows the current settings.
+    fn rebuild(self: &Rc<Self>) {
+        // These outlive a build; they must leave their old rows first.
+        let kept = self
+            .keys
+            .iter()
+            .flat_map(|(_, k)| [k.button.clone().upcast(), k.clear.clone().upcast()])
+            .chain([
+                self.hypr_status.clone().upcast(),
+                self.hypr_warning.clone().upcast(),
+                self.hypr_button.clone().upcast(),
+                self.example.clone().upcast(),
+            ]);
+        for w in kept.collect::<Vec<gtk::Widget>>() {
+            if let Some(parent) = w.parent().and_downcast::<gtk::Box>() {
+                parent.remove(&w);
+            }
+        }
+        while let Some(child) = self.page.first_child() {
+            self.page.remove(&child);
+        }
+        self.build(&self.page);
+        self.show_keys();
+        self.show_problem();
+        self.check_conflicts();
     }
 
     fn on_selected(self: &Rc<Self>, d: &gtk::DropDown, f: impl Fn(&mut Config, usize) + 'static) {
