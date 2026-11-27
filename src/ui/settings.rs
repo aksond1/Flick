@@ -526,6 +526,14 @@ impl Settings {
 
     /// Builds the groups again so every control shows the current settings.
     fn rebuild(self: &Rc<Self>) {
+        let scroll = self
+            .page
+            .ancestor(gtk::ScrolledWindow::static_type())
+            .and_downcast::<gtk::ScrolledWindow>()
+            .map(|s| s.vadjustment());
+        let position = scroll.as_ref().map(|a| a.value());
+        // Focus would move to the first control, and the view would follow it.
+        gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
         // These outlive a build; they must leave their old rows first.
         let kept = self
             .keys
@@ -549,6 +557,27 @@ impl Settings {
         self.show_keys();
         self.show_problem();
         self.check_conflicts();
+        // The new page is measured later; stay where the reset was pressed once
+        // it is tall enough again.
+        if let (Some(adj), Some(v)) = (scroll, position) {
+            let handler: Rc<Cell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let id = handler.clone();
+            let h = adj.connect_changed(move |a| {
+                if a.upper() - a.page_size() >= v {
+                    a.set_value(v);
+                    if let Some(h) = id.take() {
+                        a.disconnect(h);
+                    }
+                }
+            });
+            handler.set(Some(h));
+            // Not forever, or a later resize would scroll by itself.
+            glib::timeout_add_local_once(Duration::from_secs(1), move || {
+                if let Some(h) = handler.take() {
+                    adj.disconnect(h);
+                }
+            });
+        }
     }
 
     fn on_selected(self: &Rc<Self>, d: &gtk::DropDown, f: impl Fn(&mut Config, usize) + 'static) {
