@@ -92,6 +92,10 @@ pub struct Preview {
     player: Option<Player>,
     /// Temporary recording, deleted on close.
     temp: PathBuf,
+    /// Holds the copy the clipboard points to when the recording is not saved.
+    clipboard_dir: PathBuf,
+    /// The file in `clipboard_dir` made for this recording.
+    clipped: RefCell<Option<PathBuf>>,
     config: Config,
     /// The overlay, hidden while a save dialog is open.
     window: gtk::Window,
@@ -107,18 +111,32 @@ pub struct Preview {
     on_close: Box<dyn Fn()>,
 }
 
+/// What a button or Quit asks for.
 #[derive(Clone, Copy)]
-enum After {
-    Stay,
-    Copy,
-    Close,
-    CopyClose,
+struct Deliver {
+    save: bool,
+    copy: bool,
+    close: bool,
+}
+
+impl Deliver {
+    const SAVE: Self = Self {
+        save: true,
+        copy: false,
+        close: false,
+    };
+    const COPY: Self = Self {
+        save: false,
+        copy: true,
+        close: false,
+    };
 }
 
 impl Preview {
     /// `on_resize` runs when the panel changes size, `on_close` when it is done.
     pub fn new(
         temp: PathBuf,
+        clipboard_dir: PathBuf,
         config: &Config,
         window: &gtk::Window,
         on_resize: impl Fn() + 'static,
@@ -149,7 +167,7 @@ impl Preview {
         volume.set_width_request(80);
         volume.set_tooltip_text(Some("Volume"));
         let save = button("folder-download-symbolic", "Save");
-        let copy = button("edit-copy-symbolic", "Save and copy file");
+        let copy = button("edit-copy-symbolic", "Copy to clipboard");
         let discard = button("user-trash-symbolic", "Discard");
         let close = button("window-close-symbolic", "Close");
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -209,6 +227,8 @@ impl Preview {
             panel,
             player,
             temp,
+            clipboard_dir,
+            clipped: RefCell::new(None),
             config: config.clone(),
             window: window.clone(),
             saved: RefCell::new(None),
@@ -224,11 +244,16 @@ impl Preview {
         });
 
         p.on_click(&p.play, |p| p.toggle());
-        p.on_click(&save, |p| p.save(After::Stay));
-        p.on_click(&copy, |p| p.save(After::Copy));
+        p.on_click(&save, |p| p.deliver(Deliver::SAVE));
+        p.on_click(&copy, |p| p.deliver(Deliver::COPY));
         p.on_click(&discard, |p| p.finish());
         p.on_click(&close, |p| p.request_close());
-        p.on_click(&yes, |p| p.save(After::Close));
+        p.on_click(&yes, |p| {
+            p.deliver(Deliver {
+                close: true,
+                ..Deliver::SAVE
+            })
+        });
         p.on_click(&no, |p| p.finish());
         p.on_click(&cancel, |p| p.ask(false));
         let click = gtk::GestureClick::new();
@@ -338,8 +363,9 @@ impl Preview {
         (self.on_resize)();
     }
 
-    /// Copies the recording to its place off the UI thread; an existing copy is reused.
-    fn save(self: &Rc<Self>, after: After) {
+    /// Saves and copies off the UI thread, then closes if asked. Copying uses
+    /// the saved file when there is one.
+    fn deliver(self: &Rc<Self>, what: Deliver) {
         if self.busy.replace(true) {
             return;
         }
@@ -347,33 +373,65 @@ impl Preview {
         self.confirm.set_visible(false);
         let v = self.clone();
         glib::spawn_future_local(async move {
-            let result = v.place().await;
+            let result = v.run(what).await;
             v.busy.set(false);
             v.actions.set_sensitive(true);
-            let result = match result {
+            match result {
+                Err(e) => v.say(&format!("{e:#}")),
                 // Cancelled in the dialog.
-                Ok(None) => return v.say(""),
-                Ok(Some(p)) => Ok(p),
-                Err(e) => Err(e),
-            };
-            let closing = matches!(after, After::Close | After::CopyClose);
-            let result = result.and_then(|path| {
-                *v.saved.borrow_mut() = Some(path.clone());
-                if matches!(after, After::Copy | After::CopyClose) {
-                    clipboard::copy_file(&path)?;
-                }
-                if closing {
-                    v.finish();
-                }
-                Ok(path)
-            });
-            match (result, after) {
-                (Err(e), _) => v.say(&format!("{e:#}")),
-                (Ok(_), After::Close | After::CopyClose) => {}
-                (Ok(p), After::Copy) => v.say(&format!("Copied {}", p.display())),
-                (Ok(p), After::Stay) => v.say(&format!("Saved {}", p.display())),
+                Ok(None) => v.say(""),
+                Ok(Some(_)) if what.close => v.finish(),
+                Ok(Some(p)) if what.save => v.say(&format!("Saved {}", p.display())),
+                Ok(Some(_)) => v.say("Copied to clipboard"),
             }
         });
+    }
+
+    async fn run(&self, what: Deliver) -> Result<Option<PathBuf>> {
+        let saved = if what.save {
+            match self.place().await? {
+                Some(p) => {
+                    *self.saved.borrow_mut() = Some(p.clone());
+                    Some(p)
+                }
+                None => return Ok(None),
+            }
+        } else {
+            self.saved.borrow().clone().filter(|p| p.exists())
+        };
+        let path = match saved {
+            Some(p) => p,
+            None if what.copy => self.clipboard_copy().await?,
+            None => return Ok(None),
+        };
+        if what.copy {
+            clipboard::copy_file(&path)?;
+        }
+        Ok(Some(path))
+    }
+
+    /// The clipboard holds a file URI, so it needs a file that outlives the
+    /// temporary one; only the latest such copy is kept.
+    async fn clipboard_copy(&self) -> Result<PathBuf> {
+        if let Some(p) = self.clipped.borrow().clone().filter(|p| p.exists()) {
+            return Ok(p);
+        }
+        let dir = self.clipboard_dir.clone();
+        let name = format!("{}.mp4", save::stem(&self.config.file_name)?);
+        let from = self.temp.clone();
+        gio::spawn_blocking(move || -> Result<PathBuf> {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir)?;
+            }
+            std::fs::create_dir_all(&dir)?;
+            let to = dir.join(name);
+            save::link_or_copy(&from, &to)
+                .with_context(|| format!("cannot write {}", to.display()))?;
+            Ok(to)
+        })
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("copying panicked")))
+        .inspect(|p| *self.clipped.borrow_mut() = Some(p.clone()))
     }
 
     /// Where the recording is kept, copying it there first if needed.
@@ -398,7 +456,7 @@ impl Preview {
         };
         self.say("Saving…");
         let (from, to) = (self.temp.clone(), path.clone());
-        let copied = gio::spawn_blocking(move || std::fs::copy(&from, &to))
+        let copied = gio::spawn_blocking(move || save::link_or_copy(&from, &to))
             .await
             .unwrap_or_else(|_| Err(std::io::Error::other("copying panicked")));
         if let Err(e) = copied {
@@ -416,11 +474,10 @@ impl Preview {
         }
         let quit = self.config.quit;
         if quit.any() {
-            // A copied recording is a file, so copying saves too.
-            self.save(if quit.copy {
-                After::CopyClose
-            } else {
-                After::Close
+            self.deliver(Deliver {
+                save: quit.save,
+                copy: quit.copy,
+                close: true,
             });
         } else if self.saved.borrow().is_some() || !self.config.confirm_discard {
             self.finish();

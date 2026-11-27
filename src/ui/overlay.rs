@@ -748,6 +748,7 @@ impl Overlay {
         let close = Rc::downgrade(self);
         let p = Preview::new(
             file,
+            self.paths.cache.join("clipboard"),
             &self.config.borrow(),
             self.window.upcast_ref(),
             move || {

@@ -356,9 +356,7 @@ impl Settings {
         row(
             &list,
             "Esc and the close button",
-            Some(
-                "Acts on the screenshot or the recording on screen. Copying a recording saves it too.",
-            ),
+            Some("Acts on the screenshot or the recording on screen."),
             &[d.upcast_ref()],
         );
         self.on_selected(&d, |c, i| c.quit = Action::QUIT[i].0);

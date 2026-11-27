@@ -15,6 +15,19 @@ pub fn encode_png(frame: &Frame) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Puts `from` at `to`, replacing it. A hard link is instant, so a copy is made
+/// only across file systems.
+pub fn link_or_copy(from: &Path, to: &Path) -> io::Result<()> {
+    let mut name = to.as_os_str().to_owned();
+    name.push(".flick-link");
+    let tmp = PathBuf::from(name);
+    let _ = fs::remove_file(&tmp);
+    if fs::hard_link(from, &tmp).is_ok() {
+        return fs::rename(&tmp, to).inspect_err(|_| drop(fs::remove_file(&tmp)));
+    }
+    fs::copy(from, to).map(drop)
+}
+
 /// Reserves `<stem>.<ext>` (or `<stem>-N.<ext>`) without ever overwriting a file.
 pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
     fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
@@ -60,6 +73,20 @@ pub fn write(path: &Path, data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn link_or_copy_replaces_the_target() {
+        let d = std::env::temp_dir().join(format!("flick-link-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let (from, to) = (d.join("a.mp4"), d.join("b.mp4"));
+        fs::write(&from, "new").unwrap();
+        fs::write(&to, "").unwrap();
+        link_or_copy(&from, &to).unwrap();
+        fs::remove_file(&from).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "new");
+        assert_eq!(fs::read_dir(&d).unwrap().count(), 1);
+        fs::remove_dir_all(d).unwrap();
+    }
 
     #[test]
     fn stems_follow_the_pattern() {
