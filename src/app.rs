@@ -3,9 +3,13 @@ use crate::{
     config::{Action, Config, Launch, Lock, Paths},
     hypr,
     output::{clipboard, save},
-    ui::{self, overlay::Overlay, settings},
+    ui::{
+        self,
+        overlay::{Frozen, Group},
+        settings,
+    },
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use gtk::{gio, glib, prelude::*};
 use std::{
     cell::{Cell, RefCell},
@@ -29,7 +33,7 @@ pub fn run(launch: Launch) -> glib::ExitCode {
         .build();
     let failed = Rc::new(Cell::new(false));
     let flag = failed.clone();
-    let overlay: Rc<RefCell<Weak<Overlay>>> = Rc::default();
+    let overlay: Rc<RefCell<Weak<Group>>> = Rc::default();
     app.connect_command_line(move |app, cmd| {
         let word = cmd
             .arguments()
@@ -53,37 +57,41 @@ pub fn run(launch: Launch) -> glib::ExitCode {
     }
 }
 
-fn handle(app: &gtk::Application, launch: Launch, overlay: &RefCell<Weak<Overlay>>) -> Result<()> {
+fn handle(app: &gtk::Application, launch: Launch, overlay: &RefCell<Weak<Group>>) -> Result<()> {
     // The keys being typed into the settings must not start anything.
     if settings::is_capturing() {
         return Ok(());
     }
-    let current = overlay.borrow().upgrade();
+    let current = overlay
+        .borrow()
+        .upgrade()
+        .map(|g| g.members())
+        .unwrap_or_default();
     let paths = Paths::new()?;
     match launch {
-        Launch::Settings => match current.filter(|o| o.selecting()) {
+        Launch::Settings => match current.iter().find(|o| o.selecting()) {
             Some(o) => o.open_settings(),
             None => settings::open(app, &paths, || {}),
         },
         // A second launch reaches the running instance: it stops a recording,
         // otherwise one overlay is enough. A preview does not block a new one.
-        Launch::Main | Launch::Alternative if current.as_ref().is_some_and(|o| !o.previewing()) => {
-            if let Some(o) = current {
+        Launch::Main | Launch::Alternative if current.iter().any(|o| !o.previewing()) => {
+            for o in current {
                 o.stop_recording();
             }
         }
         _ => {
-            if let Some(o) = open(app, launch, paths)? {
-                *overlay.borrow_mut() = Rc::downgrade(&o);
+            if let Some(g) = open(app, launch, paths)? {
+                *overlay.borrow_mut() = Rc::downgrade(&g);
             }
         }
     }
     Ok(())
 }
 
-/// Opens the overlay, or shoots the locked region at once when the behavior
-/// does not show the toolbar.
-fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<Rc<Overlay>>> {
+/// Opens an overlay on every output, or shoots the locked region at once when
+/// the behavior does not show the toolbar.
+fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<Rc<Group>>> {
     anyhow::ensure!(
         gtk4_layer_shell::is_supported(),
         "the compositor does not support layer-shell"
@@ -103,26 +111,53 @@ fn open(app: &gtk::Application, launch: Launch, paths: Paths) -> Result<Option<R
         shoot(&mut backend, l, behavior.action, &config)?;
         return Ok(None);
     }
-    let wanted = match &lock {
+    anyhow::ensure!(!outputs.is_empty(), "no outputs found");
+    // The keyboard starts where the lock is, or on the focused output.
+    let focused = match &lock {
         Some(l) => Some(l.output.name.clone()),
         None => hypr::focused_output(),
     };
-    let output: OutputInfo = outputs
-        .iter()
-        .find(|o| Some(&o.name) == wanted.as_ref())
-        .or(outputs.first())
-        .context("no outputs found")?
-        .clone();
 
-    // Must happen before the overlay is mapped, or it would be in the picture.
-    let frame = backend.frame(&CaptureRequest {
-        output: output.name.clone(),
-        region: None,
-        cursor: false,
-        interval: Duration::ZERO,
-    })?;
-    let locked = lock.map(|l| l.region);
-    ui::overlay::open(app, frame, output, locked, launch, config, paths).map(Some)
+    // Every frame is taken before any overlay is mapped, or it would be in the picture.
+    let frames = outputs
+        .iter()
+        .map(|o: &OutputInfo| {
+            backend.frame(&CaptureRequest {
+                output: o.name.clone(),
+                region: None,
+                cursor: false,
+                interval: Duration::ZERO,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let group = Rc::new(Group::default());
+    let mut first_error = None;
+    for (output, frame) in outputs.into_iter().zip(frames) {
+        let locked = lock
+            .as_ref()
+            .filter(|l| l.output.name == output.name)
+            .map(|l| l.region);
+        let name = output.name.clone();
+        let frozen = Frozen {
+            frame,
+            output,
+            locked,
+        };
+        let opened = ui::overlay::open(app, frozen, launch, config.clone(), paths.clone(), &group);
+        match opened {
+            Ok(o) if Some(&name) == focused.as_ref() => o.take_keyboard(),
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("flick: skipping output {name}: {e:#}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    match (group.members().first(), first_error) {
+        (Some(_), _) => Ok(Some(group)),
+        (None, Some(e)) => Err(e),
+        (None, None) => anyhow::bail!("no outputs found"),
+    }
 }
 
 /// Copies and saves the locked region at once, showing nothing.

@@ -19,7 +19,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     path::PathBuf,
-    rc::Rc,
+    rc::{Rc, Weak},
     time::{Duration, Instant},
 };
 
@@ -105,6 +105,51 @@ impl Clock {
     }
 }
 
+/// The overlays of one launch, one per output. Only one of them has a region.
+#[derive(Default)]
+pub struct Group {
+    members: RefCell<Vec<Weak<Overlay>>>,
+    /// Set once the group closes, so closing siblings does not recurse.
+    closing: Cell<bool>,
+}
+
+impl Group {
+    pub fn members(&self) -> Vec<Rc<Overlay>> {
+        self.members
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    fn others(&self, me: &Overlay) -> Vec<Rc<Overlay>> {
+        let mut v = self.members();
+        v.retain(|o| !std::ptr::eq(&**o, me));
+        v
+    }
+
+    /// Closes the overlays still selecting, except `me`.
+    fn close_others(&self, me: &Overlay) {
+        if self.closing.replace(true) {
+            return;
+        }
+        for o in self.others(me) {
+            if o.selecting() {
+                o.window.close();
+            }
+        }
+    }
+
+    /// Dialogs and the settings open underneath every overlay.
+    fn set_visible(&self, on: bool) {
+        for o in self.members() {
+            if o.selecting() {
+                o.window.set_visible(on);
+            }
+        }
+    }
+}
+
 pub struct Overlay {
     app: gtk::Application,
     picture: gtk::Picture,
@@ -139,17 +184,30 @@ pub struct Overlay {
     asking: Cell<bool>,
     /// The canvas cursor; setting one by name makes a new cursor every time.
     cursor: Cell<Option<&'static str>>,
+    group: Rc<Group>,
+}
+
+/// One output as it was when Flick started.
+pub struct Frozen {
+    pub frame: Frame,
+    pub output: OutputInfo,
+    /// The locked region, when it is on this output.
+    pub locked: Option<Rect>,
 }
 
 pub fn open(
     app: &gtk::Application,
-    frame: Frame,
-    output: OutputInfo,
-    locked: Option<Rect>,
+    frozen: Frozen,
     launch: Launch,
     config: Config,
     paths: Paths,
+    group: &Rc<Group>,
 ) -> Result<Rc<Overlay>> {
+    let Frozen {
+        frame,
+        output,
+        locked,
+    } = frozen;
     let display = gdk::Display::default().context("no display")?;
     let monitor = display
         .monitors()
@@ -222,8 +280,10 @@ pub fn open(
         completed: Cell::new(None),
         asking: Cell::new(false),
         cursor: Cell::new(None),
+        group: group.clone(),
     });
     *o.keep.borrow_mut() = Some(o.clone());
+    group.members.borrow_mut().push(Rc::downgrade(&o));
     let weak = Rc::downgrade(&o);
     let scale = f64::from(o.frame.width) / f64::from(o.screen.w);
     let editor = Editor::new(&o.layers, scale, move |replace| {
@@ -272,6 +332,9 @@ fn connect(o: &Rc<Overlay>) {
             if o.in_region((x, y)) {
                 o.editor().press((x, y));
             }
+            return;
+        }
+        if !o.take_selection() {
             return;
         }
         o.selection.borrow_mut().begin(point(x, y));
@@ -341,6 +404,12 @@ fn connect(o: &Rc<Overlay>) {
     o.toolbar.grip.add_controller(drag);
 
     let motion = gtk::EventControllerMotion::new();
+    let weak = Rc::downgrade(o);
+    motion.connect_enter(move |_, _, _| {
+        if let Some(o) = weak.upgrade() {
+            o.take_keyboard();
+        }
+    });
     let weak = Rc::downgrade(o);
     motion.connect_motion(move |_, x, y| {
         if let Some(o) = weak.upgrade() {
@@ -444,6 +513,7 @@ fn connect(o: &Rc<Overlay>) {
         if o.stop_recording() {
             return glib::Propagation::Stop;
         }
+        o.group.close_others(&o);
         // Drop after this emission so callbacks still on the stack stay valid.
         let o = o.keep.borrow_mut().take();
         glib::idle_add_local_once(move || drop(o));
@@ -696,6 +766,40 @@ impl Overlay {
         }
     }
 
+    /// The keyboard follows the pointer between the outputs' overlays.
+    pub fn take_keyboard(&self) {
+        if !self.selecting() {
+            return;
+        }
+        for o in self.group.others(self) {
+            if o.selecting() {
+                o.window.set_keyboard_mode(KeyboardMode::OnDemand);
+            }
+        }
+        self.window.set_keyboard_mode(KeyboardMode::Exclusive);
+    }
+
+    /// Before a selection starts here: false while another output's region is
+    /// locked or edited, otherwise that region goes away.
+    fn take_selection(&self) -> bool {
+        let others = self.group.others(self);
+        if others
+            .iter()
+            .any(|o| o.selection.borrow().locked || o.editing.get())
+        {
+            return false;
+        }
+        for o in others.iter().filter(|o| o.selecting()) {
+            if o.selection.borrow().region.is_some() {
+                o.selection.borrow_mut().clear();
+                o.completed.set(None);
+                o.refresh();
+            }
+        }
+        self.take_keyboard();
+        true
+    }
+
     fn recording(&self) -> bool {
         matches!(*self.mode.borrow(), Mode::Recording(..))
     }
@@ -849,6 +953,8 @@ impl Overlay {
             return;
         }
         *self.mode.borrow_mut() = Mode::Starting;
+        // Their frozen pictures would hide the screen being recorded.
+        self.group.close_others(self);
         self.toolbar.error.set_visible(false);
         self.toolbar.play.set_sensitive(false);
         self.set_live(true);
@@ -1008,6 +1114,15 @@ impl Overlay {
 
     /// Esc and the close button do what the settings say on the way out.
     fn quit(self: &Rc<Self>) {
+        if self.selection.borrow().region.is_none()
+            && let Some(o) = self
+                .group
+                .others(self)
+                .into_iter()
+                .find(|o| o.selecting() && o.selection.borrow().region.is_some())
+        {
+            return o.quit();
+        }
         let action = self.config.borrow().quit;
         if action.any() && self.selection.borrow().region.is_some() {
             self.deliver(action, true, false);
@@ -1052,7 +1167,7 @@ impl Overlay {
         }
         // Dialogs open underneath the overlay.
         self.asking.set(true);
-        self.window.set_visible(false);
+        self.group.set_visible(false);
         let o = self.clone();
         glib::spawn_future_local(async move {
             let name = format!(
@@ -1065,14 +1180,14 @@ impl Overlay {
                 Ok(Some(p)) => {
                     let r = save::write(&p, &png).map(|()| p);
                     if !close || r.is_err() {
-                        o.window.set_visible(true);
+                        o.group.set_visible(true);
                     }
                     o.saved(r, close);
                 }
                 // Cancelled: back to the selection.
-                Ok(None) => o.window.set_visible(true),
+                Ok(None) => o.group.set_visible(true),
                 Err(e) => {
-                    o.window.set_visible(true);
+                    o.group.set_visible(true);
                     o.failed(e);
                 }
             }
@@ -1100,19 +1215,21 @@ impl Overlay {
     /// Hides the overlay while the settings window is open, since windows open
     /// underneath it; the new settings apply when it comes back.
     pub fn open_settings(self: &Rc<Self>) {
-        self.window.set_visible(false);
-        let weak = Rc::downgrade(self);
+        self.group.set_visible(false);
+        let group = Rc::downgrade(&self.group);
         settings::open(&self.app, &self.paths, move || {
-            let Some(o) = weak.upgrade() else { return };
-            match Config::load(&o.paths.config) {
-                Ok(c) => {
-                    o.selection.borrow_mut().guides = c.guides;
-                    *o.config.borrow_mut() = c;
+            let Some(g) = group.upgrade() else { return };
+            for o in g.members().iter().filter(|o| o.selecting()) {
+                match Config::load(&o.paths.config) {
+                    Ok(c) => {
+                        o.selection.borrow_mut().guides = c.guides;
+                        *o.config.borrow_mut() = c;
+                    }
+                    Err(e) => eprintln!("flick: keeping the previous settings: {e:#}"),
                 }
-                Err(e) => eprintln!("flick: keeping the previous settings: {e:#}"),
+                o.refresh();
             }
-            o.window.set_visible(true);
-            o.refresh();
+            g.set_visible(true);
         });
     }
 

@@ -223,6 +223,13 @@ impl Selection {
         };
     }
 
+    /// Forgets the region, as when another output gets one.
+    pub fn clear(&mut self) {
+        self.drag = None;
+        self.region = None;
+        self.locked = false;
+    }
+
     pub fn end(&mut self) {
         self.drag = None;
         self.region = self.region.filter(|r| r.w >= MIN_SIZE && r.h >= MIN_SIZE);
