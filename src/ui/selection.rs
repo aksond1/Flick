@@ -88,6 +88,11 @@ impl Selection {
         self.drag.is_some()
     }
 
+    /// The whole region is being dragged.
+    pub fn moving(&self) -> bool {
+        matches!(self.drag, Some(Drag::Move(..)))
+    }
+
     /// The eight resize handles with their edges; empty while locked.
     pub fn handles(&self) -> Vec<((i32, i32), Edges)> {
         let Some(r) = self.region.filter(|_| !self.locked) else {

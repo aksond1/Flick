@@ -137,6 +137,8 @@ pub struct Overlay {
     completed: Cell<Option<Rect>>,
     /// A save dialog is open.
     asking: Cell<bool>,
+    /// The canvas cursor; setting one by name makes a new cursor every time.
+    cursor: Cell<Option<&'static str>>,
 }
 
 pub fn open(
@@ -219,6 +221,7 @@ pub fn open(
         saved: RefCell::default(),
         completed: Cell::new(None),
         asking: Cell::new(false),
+        cursor: Cell::new(None),
     });
     *o.keep.borrow_mut() = Some(o.clone());
     let weak = Rc::downgrade(&o);
@@ -272,6 +275,7 @@ fn connect(o: &Rc<Overlay>) {
             return;
         }
         o.selection.borrow_mut().begin(point(x, y));
+        o.update_cursor((x, y));
         o.refresh();
     });
     let weak = Rc::downgrade(o);
@@ -285,13 +289,16 @@ fn connect(o: &Rc<Overlay>) {
         }
     });
     let weak = Rc::downgrade(o);
-    drag.connect_drag_end(move |_, _, _| {
+    drag.connect_drag_end(move |g, dx, dy| {
         if let Some(o) = weak.upgrade() {
             if o.editing.get() {
                 o.editor().release();
                 return;
             }
             o.selection.borrow_mut().end();
+            if let Some((x, y)) = g.start_point() {
+                o.update_cursor((x + dx, y + dy));
+            }
             o.keep_lock();
             o.refresh();
             if o.selecting() && o.selection.borrow().region.is_some() {
@@ -337,22 +344,7 @@ fn connect(o: &Rc<Overlay>) {
     let weak = Rc::downgrade(o);
     motion.connect_motion(move |_, x, y| {
         if let Some(o) = weak.upgrade() {
-            let s = o.selection.borrow();
-            let name = match s.edges_at(point(x, y)).map(|e| (e.x, e.y)) {
-                _ if o.editing.get() => match o.editor().tool() {
-                    _ if !o.in_region((x, y)) => "default",
-                    Tool::Brush => "crosshair",
-                    Tool::Text => "text",
-                },
-                _ if s.locked && !s.moves_at(point(x, y)) => "default",
-                Some((0, _)) => "ns-resize",
-                Some((_, 0)) => "ew-resize",
-                Some((x, y)) if x == y => "nwse-resize",
-                Some(_) => "nesw-resize",
-                None if s.moves_at(point(x, y)) => "move",
-                None => "crosshair",
-            };
-            o.canvas.set_cursor_from_name(Some(name));
+            o.update_cursor((x, y));
         }
     });
     o.canvas.add_controller(motion);
@@ -677,6 +669,33 @@ impl Overlay {
         glib::Propagation::Stop
     }
 
+    /// An open hand over a region that can be moved, a closed one while moving.
+    fn update_cursor(&self, (x, y): (f64, f64)) {
+        let s = self.selection.borrow();
+        let name = match s.edges_at(point(x, y)).map(|e| (e.x, e.y)) {
+            _ if s.moving() => "grabbing",
+            _ if self.editing.get() => match self.editor().tool() {
+                _ if !self.in_region((x, y)) => "default",
+                Tool::Brush => "crosshair",
+                Tool::Text => "text",
+            },
+            _ if s.locked && !s.moves_at(point(x, y)) => "default",
+            Some((0, _)) => "ns-resize",
+            Some((_, 0)) => "ew-resize",
+            Some((x, y)) if x == y => "nwse-resize",
+            Some(_) => "nesw-resize",
+            None if s.moves_at(point(x, y)) => "grab",
+            None => "crosshair",
+        };
+        self.set_cursor(Some(name));
+    }
+
+    fn set_cursor(&self, name: Option<&'static str>) {
+        if self.cursor.replace(name) != name {
+            self.canvas.set_cursor_from_name(name);
+        }
+    }
+
     fn recording(&self) -> bool {
         matches!(*self.mode.borrow(), Mode::Recording(..))
     }
@@ -708,6 +727,9 @@ impl Overlay {
         {
             r.track_video(self.screen);
             self.moves.set(self.moves.get() + 1);
+            // The whole surface takes input meanwhile, so the canvas shows it too.
+            self.toolbar.grip.set_cursor_from_name(Some("grabbing"));
+            self.set_cursor(Some("grabbing"));
             // Hyprland sends no motion outside the input region, even to a held
             // button, so the whole surface takes input until the move ends.
             *self.input.borrow_mut() = None;
@@ -723,6 +745,8 @@ impl Overlay {
             return;
         }
         self.selection.borrow_mut().end();
+        self.toolbar.grip.set_cursor_from_name(Some("grab"));
+        self.set_cursor(None);
         self.keep_lock();
         self.refresh();
         self.apply_input();

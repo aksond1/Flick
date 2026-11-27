@@ -56,7 +56,7 @@ impl Toolbar {
         let grip = gtk::Image::from_icon_name("list-drag-handle-symbolic");
         grip.set_size_request(36, 36);
         grip.set_tooltip_text(Some("Drag to move the region"));
-        grip.set_cursor_from_name(Some("move"));
+        grip.set_cursor_from_name(Some("grab"));
         grip.set_visible(false);
         row.append(&grip);
         let error = gtk::Label::new(None);
