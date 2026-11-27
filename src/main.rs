@@ -165,6 +165,17 @@ fn headless(command: Cmd) -> Result<()> {
             while Instant::now() < end && !rec.has_failed() {
                 std::thread::sleep(Duration::from_millis(50));
             }
+            let s = rec.stats();
+            let unique = s.written - s.repeated;
+            eprintln!(
+                "captured {} ({:.1}/s), written {}, new {} ({:.1}%), worst lag {} frames",
+                s.captured,
+                s.captured as f64 / seconds as f64,
+                s.written,
+                unique,
+                100.0 * unique as f64 / s.written.max(1) as f64,
+                s.worst_lag,
+            );
             println!("{}", rec.stop()?.display());
         }
     }

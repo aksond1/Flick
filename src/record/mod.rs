@@ -23,6 +23,15 @@ use std::{
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One ffmpeg run, from a start or resume to the next pause or stop.
+/// Counters over all segments; see [`pacer::Stats`].
+#[derive(Debug, Clone, Copy)]
+pub struct Stats {
+    pub captured: u64,
+    pub written: u64,
+    pub repeated: u64,
+    pub worst_lag: u64,
+}
+
 struct Segment {
     encoder: Encoder,
     stop: Arc<AtomicBool>,
@@ -30,17 +39,18 @@ struct Segment {
 }
 
 impl Segment {
-    fn start(slot: &FrameSlot, args: &RecordArgs) -> Result<Self> {
+    fn start(slot: &FrameSlot, args: &RecordArgs, stats: &Arc<pacer::Stats>) -> Result<Self> {
         let mut encoder = Encoder::spawn(args)?;
         let stdin = encoder.take_stdin()?;
         let stop = Arc::new(AtomicBool::new(false));
         let (flag, slot, fps) = (stop.clone(), slot.clone(), args.fps);
         let size = (args.width, args.height);
+        let stats = stats.clone();
         let (tx, pacer_done) = mpsc::channel();
         std::thread::Builder::new()
             .name("pacer".into())
             .spawn(move || {
-                let _ = tx.send(pacer::run(stdin, &slot, fps, size, &flag));
+                let _ = tx.send(pacer::run(stdin, &slot, fps, size, &flag, &stats));
             })?;
         Ok(Self {
             encoder,
@@ -75,6 +85,7 @@ pub struct Recorder {
     /// Paused segments, still finishing in the background.
     finished: Vec<JoinHandle<Result<PathBuf>>>,
     segments: u32,
+    stats: Arc<pacer::Stats>,
 }
 
 impl Recorder {
@@ -109,6 +120,7 @@ impl Recorder {
             current: None,
             finished: Vec::new(),
             segments: 0,
+            stats: Arc::default(),
         };
         r.resume()?;
         Ok(r)
@@ -153,9 +165,19 @@ impl Recorder {
             output: self.part(self.segments),
             ..self.args.clone()
         };
-        self.current = Some(Segment::start(&self.slot, &args)?);
+        self.current = Some(Segment::start(&self.slot, &args, &self.stats)?);
         self.segments += 1;
         Ok(())
+    }
+
+    pub fn stats(&self) -> Stats {
+        let get = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed);
+        Stats {
+            captured: self.slot.count(),
+            written: get(&self.stats.written),
+            repeated: get(&self.stats.repeated),
+            worst_lag: get(&self.stats.worst_lag),
+        }
     }
 
     /// True once the recording can no longer continue; `stop` reports the reason.

@@ -1,4 +1,4 @@
-//! Turns "newest frame" into constant frame rate on a monotonic clock.
+//! Turns captured frames into constant frame rate on a monotonic clock.
 use super::fit::fit;
 use crate::capture::{Frame, FrameSlot};
 use anyhow::{Context, Result};
@@ -6,10 +6,24 @@ use std::{
     io::Write,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+
+/// Frames that may wait for a tick; more would only add delay.
+const BACKLOG: usize = 2;
+
+/// What the pacer did, for judging whether a frame rate holds.
+#[derive(Debug, Default)]
+pub struct Stats {
+    pub written: AtomicU64,
+    /// Written frames that repeat the one before, as the screen had not changed
+    /// or the capture fell behind.
+    pub repeated: AtomicU64,
+    /// The most frames ever due at once; above 1 means ffmpeg made the pacer late.
+    pub worst_lag: AtomicU64,
+}
 
 /// Frames that must have been written after `elapsed`; the first is due at zero.
 pub fn frames_due(elapsed: Duration, fps: u32) -> u64 {
@@ -27,16 +41,33 @@ pub fn run(
     fps: u32,
     (width, height): (u32, u32),
     stop: &AtomicBool,
+    stats: &Stats,
 ) -> Result<u64> {
-    let first = slot.latest().context("no frame to record")?;
+    // Earlier frames, from before a pause, are not part of this segment.
+    let (mut seen, first) = slot.newest().context("no frame to record")?;
     let start = Instant::now();
     let mut written = 0;
     // The last frame that needed fitting, with its result.
     let mut fitted: Option<(Arc<Frame>, Vec<u8>)> = None;
+    let mut last: Option<Arc<Frame>> = None;
     while !stop.load(Ordering::Relaxed) {
         let due = frames_due(start.elapsed(), fps);
+        stats.worst_lag.fetch_max(due - written, Ordering::Relaxed);
         while written < due {
-            let frame = slot.latest().unwrap_or_else(|| first.clone());
+            // Every captured frame gets its own tick, even one that came late
+            // together with the next; with nothing new the last one repeats.
+            let frame = match slot.next(seen, BACKLOG) {
+                Some((n, f)) => {
+                    seen = n;
+                    f
+                }
+                None if last.is_some() => {
+                    stats.repeated.fetch_add(1, Ordering::Relaxed);
+                    last.clone().unwrap()
+                }
+                None => first.clone(),
+            };
+            last = Some(frame.clone());
             if (frame.width, frame.height) == (width, height) {
                 sink.write_all(&frame.data)?;
             } else {
@@ -47,6 +78,7 @@ pub fn run(
                 sink.write_all(&fitted.as_ref().unwrap().1)?;
             }
             written += 1;
+            stats.written.fetch_add(1, Ordering::Relaxed);
             if stop.load(Ordering::Relaxed) {
                 break;
             }

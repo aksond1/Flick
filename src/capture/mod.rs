@@ -75,17 +75,51 @@ impl Frame {
     }
 }
 
-/// Holds only the newest frame, so a slow consumer never builds up a queue.
+/// Frames a `FrameSlot` keeps: enough to ride out a late frame arriving
+/// together with the next one, few enough to never build up a queue.
+const KEPT: usize = 4;
+
+/// Kept frames with their numbers, and the number of the last one put.
+type Numbered = (VecDeque<(u64, Arc<Frame>)>, u64);
+
+/// The newest few frames, numbered from 1 in the order they arrived.
 #[derive(Clone, Default)]
-pub struct FrameSlot(Arc<Mutex<Option<Arc<Frame>>>>);
+pub struct FrameSlot(Arc<Mutex<Numbered>>);
 
 impl FrameSlot {
     pub fn put(&self, frame: Frame) {
-        *self.0.lock().unwrap() = Some(Arc::new(frame));
+        let mut g = self.0.lock().unwrap();
+        g.1 += 1;
+        let n = g.1;
+        g.0.push_back((n, Arc::new(frame)));
+        while g.0.len() > KEPT {
+            g.0.pop_front();
+        }
     }
 
     pub fn latest(&self) -> Option<Arc<Frame>> {
-        self.0.lock().unwrap().clone()
+        self.newest().map(|(_, f)| f)
+    }
+
+    /// The newest frame with its number.
+    pub fn newest(&self) -> Option<(u64, Arc<Frame>)> {
+        self.0.lock().unwrap().0.back().cloned()
+    }
+
+    /// The oldest frame after number `seen`, skipping older ones while more
+    /// than `backlog` wait, so the delay stays bounded.
+    pub fn next(&self, seen: u64, backlog: usize) -> Option<(u64, Arc<Frame>)> {
+        let g = self.0.lock().unwrap();
+        let waiting = g.0.iter().filter(|(n, _)| *n > seen).count();
+        g.0.iter()
+            .filter(|(n, _)| *n > seen)
+            .nth(waiting.saturating_sub(backlog.max(1)))
+            .cloned()
+    }
+
+    /// Frames put so far.
+    pub fn count(&self) -> u64 {
+        self.0.lock().unwrap().1
     }
 }
 
@@ -200,5 +234,33 @@ mod tests {
         assert_eq!((c.width, c.height), (2, 1));
         assert_eq!(c.data, (16..24).collect::<Vec<u8>>());
         assert!(f.crop(Rect::new(3, 0, 1, 1)).is_err());
+    }
+
+    #[test]
+    fn slot_hands_out_frames_in_order() {
+        let slot = FrameSlot::default();
+        let put = |w| {
+            slot.put(Frame {
+                width: w,
+                height: 1,
+                data: vec![],
+            })
+        };
+        let next = |seen, backlog| slot.next(seen, backlog).map(|(n, f)| (n, f.width));
+        assert!(next(0, 2).is_none());
+        put(10);
+        put(11);
+        // Both are handed out in turn, then nothing is new.
+        assert_eq!(next(0, 2), Some((1, 10)));
+        assert_eq!(next(1, 2), Some((2, 11)));
+        assert_eq!(next(2, 2), None);
+        // Behind by three: the oldest is skipped to keep two waiting at most.
+        put(12);
+        put(13);
+        put(14);
+        assert_eq!(next(2, 2), Some((4, 13)));
+        // Only four are kept.
+        assert_eq!(next(0, 9), Some((2, 11)));
+        assert_eq!((slot.newest().map(|(n, _)| n), slot.count()), (Some(5), 5));
     }
 }
