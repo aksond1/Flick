@@ -30,6 +30,10 @@ use wayland_client::{
         wl_shm_pool::WlShmPool,
     },
 };
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::ZxdgOutputManagerV1,
+    zxdg_output_v1::{self, ZxdgOutputV1},
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self as frame, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -64,6 +68,7 @@ struct Pending {
 struct State {
     shm: Option<WlShm>,
     manager: Option<ZwlrScreencopyManagerV1>,
+    xdg: Option<ZxdgOutputManagerV1>,
     outputs: Vec<(WlOutput, OutputInfo)>,
     pending: Pending,
 }
@@ -135,6 +140,7 @@ impl WlrBackend {
         let mut state = State {
             shm: None,
             manager: None,
+            xdg: None,
             outputs: Vec::new(),
             pending: Pending {
                 id: 0,
@@ -144,6 +150,11 @@ impl WlrBackend {
             },
         };
         queue.roundtrip(&mut state)?; // globals
+        if let Some(xdg) = &state.xdg {
+            for (i, (o, _)) in state.outputs.iter().enumerate() {
+                xdg.get_xdg_output(o, &queue.handle(), i);
+            }
+        }
         queue.roundtrip(&mut state)?; // output properties
         if state.manager.is_none() {
             bail!("compositor does not offer zwlr_screencopy_manager_v1 version 3");
@@ -414,12 +425,16 @@ impl Dispatch<WlRegistry, ()> for State {
                 "zwlr_screencopy_manager_v1" if version >= 3 => {
                     s.manager = Some(reg.bind(name, 3, qh, ()))
                 }
+                "zxdg_output_manager_v1" if version >= 2 => {
+                    s.xdg = Some(reg.bind(name, version.min(3), qh, ()))
+                }
                 "wl_output" if version >= 4 => {
                     let info = OutputInfo {
                         name: String::new(),
                         width: 0,
                         height: 0,
                         scale: 1,
+                        logical: (0, 0),
                     };
                     s.outputs.push((reg.bind(name, 4, qh, ()), info));
                 }
@@ -500,6 +515,25 @@ delegate_noop!(State: ignore WlShm);
 delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: WlShmPool);
 delegate_noop!(State: ZwlrScreencopyManagerV1);
+delegate_noop!(State: ZxdgOutputManagerV1);
+
+/// The data is the output's index in `State::outputs`.
+impl Dispatch<ZxdgOutputV1, usize> for State {
+    fn event(
+        s: &mut Self,
+        _: &ZxdgOutputV1,
+        e: zxdg_output_v1::Event,
+        i: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let (zxdg_output_v1::Event::LogicalSize { width, height }, Some((_, info))) =
+            (e, s.outputs.get_mut(*i))
+        {
+            info.logical = (width, height);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

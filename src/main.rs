@@ -122,7 +122,11 @@ fn headless(command: Cmd) -> Result<()> {
         Cmd::Settings => unreachable!("run by the app"),
         Cmd::Outputs => {
             for o in backend.outputs()? {
-                println!("{} {}x{} scale {}", o.name, o.width, o.height, o.scale);
+                let (w, h) = o.logical;
+                println!(
+                    "{} {}x{} scale {} logical {w}x{h}",
+                    o.name, o.width, o.height, o.scale
+                );
             }
         }
         Cmd::Shot {

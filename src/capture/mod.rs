@@ -20,7 +20,12 @@ pub struct OutputInfo {
     /// Physical mode size.
     pub width: i32,
     pub height: i32,
+    /// The integer `wl_output` scale: 2 for any fractional scale above 1.
     pub scale: i32,
+    /// Logical size, which tells fractional scales apart. Zero when unknown,
+    /// as in lock files of older versions, so those no longer match.
+    #[serde(default)]
+    pub logical: (i32, i32),
 }
 
 #[derive(Debug, Clone)]

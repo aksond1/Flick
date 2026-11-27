@@ -450,7 +450,8 @@ mod tests {
             name: "HDMI-A-1".into(),
             width: 1920,
             height: 1080,
-            scale: 1,
+            scale: 2,
+            logical: (1280, 720),
         };
         let lock = Lock {
             output: out.clone(),
@@ -460,7 +461,21 @@ mod tests {
         lock.save(&path).unwrap();
         assert_eq!(Lock::load(&path).unwrap().unwrap(), lock);
         assert!(lock.is_valid(std::slice::from_ref(&out)));
-        assert!(!lock.is_valid(&[OutputInfo { width: 2560, ..out }]));
+        assert!(!lock.is_valid(&[OutputInfo {
+            width: 2560,
+            ..out.clone()
+        }]));
+        // 1.5 and 1.25 both read as scale 2; only the logical size differs.
+        let scale = OutputInfo {
+            logical: (1536, 864),
+            ..out.clone()
+        };
+        assert!(!lock.is_valid(&[scale]));
+        // Lock files of older versions have no logical size.
+        let old = "region = { x = 1, y = 2, w = 3, h = 4 }\n\
+                   [output]\nname = \"HDMI-A-1\"\nwidth = 1920\nheight = 1080\nscale = 2\n";
+        fs::write(&path, old).unwrap();
+        assert!(!Lock::load(&path).unwrap().unwrap().is_valid(&[out]));
         assert!(!lock.is_valid(&[]));
         Lock::clear(&path).unwrap();
         Lock::clear(&path).unwrap();

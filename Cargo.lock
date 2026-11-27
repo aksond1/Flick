@@ -282,6 +282,7 @@ dependencies = [
  "serde_json",
  "toml",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
 ]
