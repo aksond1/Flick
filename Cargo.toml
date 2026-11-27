@@ -12,7 +12,7 @@ gtk = { version = "0.11", package = "gtk4", features = ["v4_16"] }
 gtk4-layer-shell = "0.9"
 pangocairo = "0.22"
 png = "0.18.1"
-rustix = { version = "1", features = ["fs", "mm", "process", "event", "std"], default-features = false }
+rustix = { version = "1", features = ["fs", "mm", "pipe", "process", "event", "std"], default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.2.2"

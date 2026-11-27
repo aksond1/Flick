@@ -7,10 +7,11 @@ use anyhow::{Context, Result, bail};
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},
     fs::{MemfdFlags, memfd_create},
+    mm::{MapFlags, ProtFlags, mmap, munmap},
 };
 use std::{
     fs::File,
-    os::{fd::AsFd, unix::fs::FileExt},
+    os::fd::AsFd,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -69,13 +70,53 @@ struct State {
 
 struct ShmBuffer {
     spec: Spec,
-    file: File,
+    map: Mapping,
     buffer: WlBuffer,
 }
 
 impl Drop for ShmBuffer {
     fn drop(&mut self) {
         self.buffer.destroy();
+    }
+}
+
+/// The buffer's memory, read in place rather than copied out first.
+struct Mapping {
+    ptr: *mut std::ffi::c_void,
+    len: usize,
+}
+
+// Only the thread that owns the backend touches it.
+unsafe impl Send for Mapping {}
+
+impl Mapping {
+    fn new(file: &File, len: usize) -> Result<Self> {
+        // SAFETY: a fresh shared read-only mapping of a file of at least `len` bytes.
+        let ptr = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                len,
+                ProtFlags::READ,
+                MapFlags::SHARED,
+                file,
+                0,
+            )?
+        };
+        Ok(Self { ptr, len })
+    }
+
+    /// Valid to read between `ready` and the next copy request, while the
+    /// compositor leaves the buffer alone.
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: the mapping lives as long as `self` and is `len` bytes long.
+        unsafe { std::slice::from_raw_parts(self.ptr.cast(), self.len) }
+    }
+}
+
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        // SAFETY: mapped in `new` and no slice of it outlives `self`.
+        let _ = unsafe { munmap(self.ptr, self.len) };
     }
 }
 
@@ -225,16 +266,11 @@ impl WlrBackend {
         if self.state.pending.phase != Phase::Ready {
             bail!("compositor failed to copy the frame");
         }
-        let mut raw = vec![0; spec.stride as usize * spec.height as usize];
-        self.buffer
-            .as_ref()
-            .unwrap()
-            .file
-            .read_exact_at(&mut raw, 0)?;
+        let raw = self.buffer.as_ref().unwrap().map.bytes();
         Ok(Some(Frame {
             width: spec.width,
             height: spec.height,
-            data: pack(&raw, spec, self.state.pending.y_invert),
+            data: pack(raw, spec, self.state.pending.y_invert),
         }))
     }
 
@@ -243,6 +279,7 @@ impl WlrBackend {
         let size = spec.stride as u64 * spec.height as u64;
         let file = File::from(memfd_create("flick-frame", MemfdFlags::CLOEXEC)?);
         file.set_len(size)?;
+        let map = Mapping::new(&file, usize::try_from(size)?)?;
         let shm = self.state.shm.as_ref().unwrap();
         let pool = shm.create_pool(file.as_fd(), i32::try_from(size)?, &qh, ());
         let buffer = pool.create_buffer(
@@ -255,7 +292,7 @@ impl WlrBackend {
             (),
         );
         pool.destroy();
-        Ok(ShmBuffer { spec, file, buffer })
+        Ok(ShmBuffer { spec, map, buffer })
     }
 }
 

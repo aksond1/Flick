@@ -106,7 +106,12 @@ impl Encoder {
     }
 
     pub fn take_stdin(&mut self) -> Result<ChildStdin> {
-        self.child.stdin.take().context("ffmpeg stdin is taken")
+        let stdin = self.child.stdin.take().context("ffmpeg stdin is taken")?;
+        // A frame is megabytes; the default 64 KiB pipe splits it into many
+        // writes, each a switch between the pacer and ffmpeg. 1 MiB is the
+        // usual unprivileged limit, so failing to grow it is fine.
+        let _ = rustix::pipe::fcntl_setpipe_size(&stdin, 1 << 20);
+        Ok(stdin)
     }
 
     pub fn has_exited(&mut self) -> bool {
