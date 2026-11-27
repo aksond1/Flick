@@ -6,6 +6,8 @@ pub struct Toolbar {
     pub settings: gtk::Button,
     pub lock: gtk::ToggleButton,
     pub play: gtk::Button,
+    /// Pauses and resumes a recording.
+    pub pause: gtk::Button,
     pub edit: gtk::Button,
     pub copy: gtk::Button,
     pub download: gtk::Button,
@@ -36,13 +38,15 @@ impl Toolbar {
         let lock = gtk::ToggleButton::new();
         lock.set_focusable(false);
         let play = button("media-playback-start-symbolic", "Record");
+        let pause = button("media-playback-pause-symbolic", "Pause");
+        pause.set_visible(false);
         let edit = button("document-edit-symbolic", "Edit");
         let copy = button("edit-copy-symbolic", "Copy to clipboard");
         let download = button("folder-download-symbolic", "Save");
         let close = button("window-close-symbolic", "Close");
         row.append(&settings);
         row.append(&lock);
-        for b in [&play, &edit, &copy, &download, &close] {
+        for b in [&play, &pause, &edit, &copy, &download, &close] {
             row.append(b);
         }
         let time = gtk::Label::new(Some("00:00"));
@@ -67,6 +71,7 @@ impl Toolbar {
             settings,
             lock,
             play,
+            pause,
             edit,
             copy,
             download,
@@ -93,7 +98,7 @@ impl Toolbar {
         }));
     }
 
-    /// While recording only the stop button and the timer remain.
+    /// While recording only stop, pause, the timer and the grip remain.
     pub fn show_recording(&self, on: bool) {
         for b in [
             &self.settings,
@@ -107,6 +112,8 @@ impl Toolbar {
         self.lock.set_visible(!on);
         self.time.set_text("00:00");
         self.time.set_visible(on);
+        self.pause.set_visible(on);
+        self.show_paused(false);
         self.play.set_icon_name(if on {
             "media-playback-stop-symbolic"
         } else {
@@ -114,6 +121,21 @@ impl Toolbar {
         });
         self.play
             .set_tooltip_text(Some(if on { "Stop" } else { "Record" }));
+    }
+
+    pub fn show_paused(&self, paused: bool) {
+        let (icon, tip) = if paused {
+            ("media-record-symbolic", "Resume")
+        } else {
+            ("media-playback-pause-symbolic", "Pause")
+        };
+        self.pause.set_icon_name(icon);
+        self.pause.set_tooltip_text(Some(tip));
+        if paused {
+            self.time.add_css_class("flick-paused");
+        } else {
+            self.time.remove_css_class("flick-paused");
+        }
     }
 
     pub fn show_error(&self, message: &str) {

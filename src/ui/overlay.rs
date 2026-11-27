@@ -39,6 +39,7 @@ window.flick-overlay { background: transparent; }
 .flick-toolbar button:checked { background: #1a73e8; }
 .flick-toolbar button:disabled { opacity: 0.35; }
 .flick-time { color: #ffffff; padding: 0 8px; font-feature-settings: 'tnum'; }
+.flick-toolbar label.flick-paused { color: #9aa0a6; }
 .flick-toolbar entry { background: #303136; color: #ffffff; border: none; outline: none;
   box-shadow: none; border-radius: 8px; min-height: 32px; }
 .flick-toolbar entry.error { background: #7a2f2f; }
@@ -77,9 +78,31 @@ enum Mode {
     Select,
     /// The screen is being unfrozen.
     Starting,
-    Recording(Recorder, Instant),
+    Recording(Box<Recorder>, Clock),
     Stopping,
     Preview(Rc<Preview>),
+}
+
+/// Recorded time, without the pauses.
+struct Clock {
+    before: Duration,
+    /// Running since, or paused.
+    since: Option<Instant>,
+}
+
+impl Clock {
+    fn elapsed(&self) -> Duration {
+        self.before + self.since.map_or(Duration::ZERO, |t| t.elapsed())
+    }
+
+    fn pause(&mut self) {
+        self.before = self.elapsed();
+        self.since = None;
+    }
+
+    fn resume(&mut self) {
+        self.since.get_or_insert_with(Instant::now);
+    }
 }
 
 pub struct Overlay {
@@ -409,6 +432,12 @@ fn connect(o: &Rc<Overlay>) {
             && !o.stop_recording()
         {
             o.start_recording();
+        }
+    });
+    let weak = Rc::downgrade(o);
+    o.toolbar.pause.connect_clicked(move |_| {
+        if let Some(o) = weak.upgrade() {
+            o.toggle_pause();
         }
     });
     let weak = Rc::downgrade(o);
@@ -829,7 +858,11 @@ impl Overlay {
         };
         let recorder = Recorder::start(backend, req, c.fps, audio, file.clone())
             .inspect_err(|_| drop(std::fs::remove_file(&file)))?;
-        *self.mode.borrow_mut() = Mode::Recording(recorder, Instant::now());
+        let clock = Clock {
+            before: Duration::ZERO,
+            since: Some(Instant::now()),
+        };
+        *self.mode.borrow_mut() = Mode::Recording(Box::new(recorder), clock);
         self.refresh();
         self.apply_input();
 
@@ -839,8 +872,8 @@ impl Overlay {
                 return glib::ControlFlow::Break;
             };
             let failed = match &mut *o.mode.borrow_mut() {
-                Mode::Recording(r, start) => {
-                    let s = start.elapsed().as_secs();
+                Mode::Recording(r, clock) => {
+                    let s = clock.elapsed().as_secs();
                     let text = format!("{:02}:{:02}", s / 60, s % 60);
                     o.toolbar.time.set_text(&text);
                     r.has_failed()
@@ -853,6 +886,30 @@ impl Overlay {
             glib::ControlFlow::Continue
         });
         Ok(())
+    }
+
+    fn toggle_pause(&self) {
+        let result = match &mut *self.mode.borrow_mut() {
+            Mode::Recording(r, clock) if r.paused() => r.resume().map(|()| {
+                clock.resume();
+                false
+            }),
+            Mode::Recording(r, clock) => {
+                r.pause();
+                clock.pause();
+                Ok(true)
+            }
+            _ => return,
+        };
+        match result {
+            Ok(paused) => {
+                self.toolbar.error.set_visible(false);
+                self.toolbar.show_paused(paused);
+            }
+            Err(e) => self.toolbar.show_error(&format!("Cannot resume: {e:#}")),
+        }
+        self.refresh();
+        self.apply_input();
     }
 
     /// Finishes a recording and shows the preview. False if none was running.

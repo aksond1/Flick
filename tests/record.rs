@@ -114,8 +114,8 @@ fn frame_size_changes_keep_the_video_size() {
 #[test]
 fn encoder_failure_is_reported() {
     let d = dir("fail");
-    // The output path is a directory, so ffmpeg exits at once.
-    std::fs::create_dir_all(d.join("a.mp4")).unwrap();
+    // The first segment's path is a directory, so ffmpeg exits at once.
+    std::fs::create_dir_all(d.join("a.part0.mp4")).unwrap();
     let mut r = start(d.join("a.mp4")).unwrap();
     for _ in 0..100 {
         if r.has_failed() {
@@ -126,5 +126,28 @@ fn encoder_failure_is_reported() {
     assert!(r.has_failed());
     let e = r.stop().unwrap_err().to_string();
     assert!(e.contains("ffmpeg failed"), "{e}");
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn pauses_are_left_out() {
+    let d = dir("pause");
+    let mut r = start(d.join("a.mp4")).unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    r.pause();
+    assert!(r.paused());
+    std::thread::sleep(Duration::from_secs(1));
+    r.resume().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    r.pause();
+    std::thread::sleep(Duration::from_millis(500));
+    r.resume().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let f = r.stop().unwrap();
+    assert_eq!(probe(&f, "stream=width,height"), "200,100");
+    let secs: f64 = probe(&f, "format=duration").parse().unwrap();
+    assert!((secs - 2.5).abs() < 0.3, "{secs}");
+    let left: Vec<_> = std::fs::read_dir(&d).unwrap().collect();
+    assert_eq!(left.len(), 1, "{left:?}");
     std::fs::remove_dir_all(d).unwrap();
 }

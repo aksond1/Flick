@@ -10,23 +10,71 @@ use anyhow::{Context, Result, bail};
 pub use ffmpeg::Audio;
 use ffmpeg::{Encoder, RecordArgs};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
     },
+    thread::JoinHandle,
     time::Duration,
 };
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub struct Recorder {
+/// One ffmpeg run, from a start or resume to the next pause or stop.
+struct Segment {
     encoder: Encoder,
-    capture: StreamHandle,
-    region: LiveRegion,
     stop: Arc<AtomicBool>,
     pacer_done: Receiver<Result<u64>>,
+}
+
+impl Segment {
+    fn start(slot: &FrameSlot, args: &RecordArgs) -> Result<Self> {
+        let mut encoder = Encoder::spawn(args)?;
+        let stdin = encoder.take_stdin()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (flag, slot, fps) = (stop.clone(), slot.clone(), args.fps);
+        let size = (args.width, args.height);
+        let (tx, pacer_done) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("pacer".into())
+            .spawn(move || {
+                let _ = tx.send(pacer::run(stdin, &slot, fps, size, &flag));
+            })?;
+        Ok(Self {
+            encoder,
+            stop,
+            pacer_done,
+        })
+    }
+
+    fn finish(mut self) -> Result<PathBuf> {
+        self.stop.store(true, Ordering::Relaxed);
+        // The pacer may be stuck writing to a hung ffmpeg, so never join blindly.
+        let Ok(paced) = self.pacer_done.recv_timeout(STOP_TIMEOUT) else {
+            self.encoder.kill();
+            bail!("ffmpeg stopped accepting frames");
+        };
+        let path = self.encoder.finish(STOP_TIMEOUT)?;
+        paced.context("writing frames to ffmpeg")?;
+        Ok(path)
+    }
+}
+
+/// Records into segments: a pause ends one, resuming starts the next, and
+/// stopping joins them. ffmpeg reads the audio itself, so this is the only
+/// way to leave the paused time out of the sound as well.
+pub struct Recorder {
+    capture: StreamHandle,
+    region: LiveRegion,
+    slot: FrameSlot,
+    /// The first segment's settings; later ones differ only in the file.
+    args: RecordArgs,
+    current: Option<Segment>,
+    /// Paused segments, still finishing in the background.
+    finished: Vec<JoinHandle<Result<PathBuf>>>,
+    segments: u32,
 }
 
 impl Recorder {
@@ -46,29 +94,28 @@ impl Recorder {
         let region = LiveRegion::new(req.region);
         let capture = backend.stream(req, region.clone(), slot.clone())?;
         let first = slot.latest().context("capture produced no first frame")?;
-        let mut encoder = Encoder::spawn(&RecordArgs {
+        let args = RecordArgs {
             width: first.width,
             height: first.height,
             fps,
             audio,
             output,
-        })?;
-        let stdin = encoder.take_stdin()?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        let (tx, pacer_done) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("pacer".into())
-            .spawn(move || {
-                let _ = tx.send(pacer::run(stdin, &slot, fps, &flag));
-            })?;
-        Ok(Self {
-            encoder,
+        };
+        let mut r = Self {
             capture,
             region,
-            stop,
-            pacer_done,
-        })
+            slot,
+            args,
+            current: None,
+            finished: Vec::new(),
+            segments: 0,
+        };
+        r.resume()?;
+        Ok(r)
+    }
+
+    fn part(&self, n: u32) -> PathBuf {
+        part(&self.args.output, n)
     }
 
     /// Follows the border on `screen` until `resume_video`.
@@ -86,24 +133,110 @@ impl Recorder {
         self.region.resume(region);
     }
 
+    pub fn paused(&self) -> bool {
+        self.current.is_none()
+    }
+
+    /// Stops writing; the segment is finalised in the background.
+    pub fn pause(&mut self) {
+        if let Some(s) = self.current.take() {
+            self.finished.push(std::thread::spawn(move || s.finish()));
+        }
+    }
+
+    /// Starts a new segment after `pause`.
+    pub fn resume(&mut self) -> Result<()> {
+        if self.current.is_some() {
+            return Ok(());
+        }
+        let args = RecordArgs {
+            output: self.part(self.segments),
+            ..self.args.clone()
+        };
+        self.current = Some(Segment::start(&self.slot, &args)?);
+        self.segments += 1;
+        Ok(())
+    }
+
     /// True once the recording can no longer continue; `stop` reports the reason.
     pub fn has_failed(&mut self) -> bool {
-        self.encoder.has_exited() || self.capture.is_finished()
+        self.current
+            .as_mut()
+            .is_some_and(|s| s.encoder.has_exited())
+            || self.capture.is_finished()
     }
 
     /// Finalises the file and returns its path.
     pub fn stop(mut self) -> Result<PathBuf> {
-        self.stop.store(true, Ordering::Relaxed);
-        // The pacer may be stuck writing to a hung ffmpeg, so never join blindly.
-        let paced = self.pacer_done.recv_timeout(STOP_TIMEOUT);
+        self.pause();
+        let finished: Vec<_> = self
+            .finished
+            .drain(..)
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("panicked")))
+            })
+            .collect();
         let captured = self.capture.stop();
-        if paced.is_err() {
-            self.encoder.kill();
-            bail!("ffmpeg stopped accepting frames");
+        let result = finished
+            .into_iter()
+            .collect::<Result<Vec<_>>>()
+            .and_then(|parts| {
+                captured.context("screen capture ended early")?;
+                join(&parts, &self.args.output)
+            });
+        for n in 0..self.segments {
+            let _ = std::fs::remove_file(part(&self.args.output, n));
         }
-        let path = self.encoder.finish(STOP_TIMEOUT)?;
-        paced?.context("writing frames to ffmpeg")?;
-        captured.context("screen capture ended early")?;
-        Ok(path)
+        result.map(|()| self.args.output.clone())
+    }
+}
+
+/// `a.mp4` → `a.part0.mp4`.
+fn part(output: &Path, n: u32) -> PathBuf {
+    let stem = output.file_stem().unwrap_or_default().to_string_lossy();
+    output.with_file_name(format!("{stem}.part{n}.mp4"))
+}
+
+/// Concatenates segments of equal format without re-encoding.
+fn join(parts: &[PathBuf], output: &Path) -> Result<()> {
+    if let [one] = parts {
+        return std::fs::rename(one, output).context("cannot move the recording");
+    }
+    let list = output.with_extension("txt");
+    let mut text = String::new();
+    for p in parts {
+        let p = p.to_str().context("recording path is not UTF-8")?;
+        text += &format!("file '{}'\n", p.replace('\'', r"'\''"));
+    }
+    std::fs::write(&list, text)?;
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-y"])
+        .args(["-f", "concat", "-safe", "0", "-i"])
+        .arg(&list)
+        .args(["-c", "copy", "-movflags", "+faststart", "-f", "mp4"])
+        .arg(output)
+        .output();
+    let _ = std::fs::remove_file(&list);
+    let out = out.context("cannot start ffmpeg")?;
+    if !out.status.success() {
+        bail!(
+            "joining the recording failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_names() {
+        assert_eq!(
+            part(Path::new("/c/rec_1.mp4"), 2),
+            Path::new("/c/rec_1.part2.mp4")
+        );
     }
 }

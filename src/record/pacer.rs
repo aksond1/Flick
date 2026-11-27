@@ -20,8 +20,14 @@ fn due_at(index: u64, fps: u32) -> Duration {
     Duration::from_nanos((index as u128 * 1_000_000_000).div_ceil(fps as u128) as u64)
 }
 
-/// Writes frames until `stop`; returns how many. Dropping `sink` signals EOF.
-pub fn run(mut sink: impl Write, slot: &FrameSlot, fps: u32, stop: &AtomicBool) -> Result<u64> {
+/// Writes frames of `size` until `stop`; returns how many. Dropping `sink` signals EOF.
+pub fn run(
+    mut sink: impl Write,
+    slot: &FrameSlot,
+    fps: u32,
+    (width, height): (u32, u32),
+    stop: &AtomicBool,
+) -> Result<u64> {
     let first = slot.latest().context("no frame to record")?;
     let start = Instant::now();
     let mut written = 0;
@@ -31,11 +37,11 @@ pub fn run(mut sink: impl Write, slot: &FrameSlot, fps: u32, stop: &AtomicBool) 
         let due = frames_due(start.elapsed(), fps);
         while written < due {
             let frame = slot.latest().unwrap_or_else(|| first.clone());
-            if (frame.width, frame.height) == (first.width, first.height) {
+            if (frame.width, frame.height) == (width, height) {
                 sink.write_all(&frame.data)?;
             } else {
                 if fitted.as_ref().is_none_or(|(f, _)| !Arc::ptr_eq(f, &frame)) {
-                    let data = fit(&frame, first.width, first.height);
+                    let data = fit(&frame, width, height);
                     fitted = Some((frame, data));
                 }
                 sink.write_all(&fitted.as_ref().unwrap().1)?;
