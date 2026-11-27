@@ -14,11 +14,11 @@ Work follows staged milestones:
 
 - **0-3 (done):** capture, frozen overlay, selection, Copy, Download, Lock, Esc; recording with system audio (stop by the button or by launching `flick` again) and an in-region preview; an in-region editor (brush, text, undo, redo, clear).
 - **4 (done):** the settings window, launch behaviors (main, alternative), Quit behavior, Hyprland keybindings, microphone, optional guide lines, moving a locked region.
-- **5:** multi-monitor and fractional scaling, 60 FPS under load (already selectable), notifications, PKGBUILD.
+- **5:** pausing recordings, copying a recording without saving, multi-monitor (done), fractional scaling (lock checks the logical size; tested at 1.25), PKGBUILD (done, `packaging/arch`); still open: 60 FPS under load (already selectable).
 
 The spec for the settings is the user's note `~/repos/Obsidian/Flick/Settings.md`. Hardware encoding is intentionally excluded. GIF/WebM export was dropped: videos are MP4 only.
 
-User decisions: no fastshots (removed: with a lock, a behavior that does not show the toolbar already shoots at once), no separate windows except the settings (preview and editor were moved into the region), blue accent `#1a73e8`, no resizing while recording, no "full window size" view (it belonged to an old separate-window design). Commits go to stage branches (`stage-N`).
+User decisions: no fastshots (removed: with a lock, a behavior that does not show the toolbar already shoots at once), no separate windows except the settings (preview and editor were moved into the region), blue accent `#1a73e8`, no resizing while recording, no "full window size" view (it belonged to an old separate-window design), no notifications (dropped for good), no pause hotkey (rejected; pausing is the toolbar button only), regions never span two monitors. License: GPL-3.0-or-later. Commits go to stage branches (`stage-N`).
 
 ## Commands
 
@@ -41,6 +41,7 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 
 ## Architecture
 
+- **Multiple monitors.** `app::open` takes a frame of every output, then opens one `Overlay` per output; they share an `overlay::Group`. A selection starting on one (`Overlay::take_selection`) clears the others' regions and is refused while another output's region is locked or being edited. The keyboard follows the pointer (`take_keyboard` on `enter`: Exclusive here, OnDemand elsewhere). Closing one closes the others still selecting (`Group::close_others`, guarded by `closing`), and so does starting a recording, since their frozen pictures would hide the live screen. Esc on an output without a region runs the quit behavior of the one with it. Dialogs and the settings hide the whole group (`Group::set_visible`). `app.rs` keeps a `Weak<Group>`.
 - **Two Wayland connections.** GTK owns one; `capture/wlr.rs` (`wlr-screencopy` v3) opens its own so it can run on a separate thread. `app.rs` must grab the frame *before* the overlay is mapped, or the overlay ends up in the picture.
 - **Coordinates.** Regions are logical pixels relative to one output. Conversion to frame pixels goes through `Rect::scaled`, which rounds edges rather than sizes. `Frame` is always tightly packed BGRX; stride, y-inversion and channel order are normalized in `wlr.rs`, which reads the shm buffer through a persistent `mmap` so each frame is copied only once.
 - **Capture loop.** A busy Wayland socket (`WouldBlock`) is not an error, and events carry a frame id so those of a cancelled capture are ignored; both once ended recordings. Streaming is paced by `CaptureRequest::interval` to spare the compositor.
@@ -60,14 +61,14 @@ System dependencies: `gtk4`, `gtk4-layer-shell`, `ffmpeg` (with `ffprobe` for te
 - **Hyprland keybindings** (`hypr.rs`): Flick writes `flick.lua` (or `flick.conf` when there is no `hyprland.lua`) next to the user's config, with `description = "flick"` (`bindd` in `.conf`) so `hyprctl binds` tells its own bindings apart for the conflict warning; in Lua mode the bind's `arg` is an opaque id. Adding the `require("flick")` line happens only on the user's click. Every valid save, and opening the window, rewrites the file when it differs from the settings: keys can become valid through any change, not only a key change, and a stale file swapped Print and Alt+Print once. Changes reload Hyprland with `hyprctl reload config-only`.
 - **Styling** is one CSS string in `ui/overlay.rs`, scoped under `.flick-toolbar`; the settings window has its own, scoped under `.flick-settings`, on top of the system theme.
 - **Clipboard** goes through `wl-copy`, whose forked process keeps the content alive after Flick exits.
-- **Lock** (`~/.local/state/flick/lock.toml`) is valid only if the output's name, size and scale all still match. A locked region cannot be resized or redrawn, but it can be moved (inside drag or the recording grip); `Overlay::keep_lock` saves the new place. Config is `~/.config/flick/config.toml`.
+- **Lock** (`~/.local/state/flick/lock.toml`) is valid only if the whole `OutputInfo` still matches: name, size, scale and logical size. The logical size comes from `xdg-output` in `wlr.rs`, because `wl_output` reports scale 2 for every fractional scale above 1; lock files without it never match. A locked region cannot be resized or redrawn, but it can be moved (inside drag or the recording grip); `Overlay::keep_lock` saves the new place. Config is `~/.config/flick/config.toml`.
 - **Single instance** comes from the `GtkApplication` D-Bus id `dev.flick.Flick`.
 
 ## Testing the UI
 
 Do not inject input into the user's live session. Run a nested `Hyprland -c <config>` with `HYPRLAND_NO_SD_VARS=1 HYPRLAND_NO_SD_NOTIFY=1` on a private bus (`dbus-daemon --session --address=unix:path=$RT/bus --fork`, its address in `DBUS_SESSION_BUS_ADDRESS` for both Hyprland and Flick), and run Flick there with `GTK_A11Y=none GDK_DEBUG=no-portals` and private `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME`. Also use a private `XDG_RUNTIME_DIR` (a short path, e.g. `mktemp -d /run/user/$UID/fk.XXXXXX`, because socket paths are limited to about 108 bytes) and pass the host socket as an absolute path in `WAYLAND_DISPLAY`: a private D-Bus alone let the accessibility service overwrite the real session's `at-spi` socket.
 
-The nested window is tiled by the host, so its output size and scale vary. Wait about 12 s after start, read the size from `flick outputs` and pass it as `VPTR_SIZE`; pointer coordinates are then physical pixels.
+The nested window is tiled by the host, so its output size and scale vary. Wait about 12 s after start, read the size from `flick outputs` and pass it as `VPTR_SIZE`; pointer coordinates are then physical pixels. For a second monitor run `hyprctl output create headless` (it becomes `HEADLESS-1`) and give it an `hl.monitor` rule with a position beside the first, then `hyprctl reload`; with several outputs `VPTR_SIZE` is the logical size of the whole layout and coordinates are global logical ones. A fractional `scale` in that rule tests fractional scaling (Hyprland replaces invalid scales, e.g. 1.5 at 800x600 becomes 1.6). `grim -o NAME` screenshots one output.
 
 Programs that the nested Hyprland starts (its keybindings run `flick`) get Hyprland's environment, not yours, so put `hl.env("GDK_DEBUG", "no-portals")`, the private `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` of a private `dbus-daemon` into the nested config. Otherwise GTK's file dialog goes through `xdg-desktop-portal` on the nested bus, and that portal inherited the host's `WAYLAND_DISPLAY`: the dialog opened in the user's real session. Kill only processes whose environment has the private `XDG_RUNTIME_DIR`; `pkill -f flick` also matches your own shell.
 

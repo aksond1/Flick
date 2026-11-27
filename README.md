@@ -4,20 +4,32 @@ Region screenshots and screen recording for Hyprland (Wayland), written in Rust 
 
 Everything happens inside the selected region: selecting, editing, recording and playback. Only the settings have a window of their own.
 
-> Work in progress. Screenshots, recording, preview, the editor and the settings are ready.
+> Work in progress. Screenshots, recording, preview, the editor, the settings and multiple monitors are ready.
 
 ## Features
 
-- **Selection:** the screen freezes; move the region or resize it with 8 handles or their dashed guide lines (which can be turned off).
-- **Lock:** pins the region, so the next launch opens with it right away; a pinned region can still be moved.
+- **Selection:** every monitor freezes and you select on any of them; move the region or resize it with 8 handles or their dashed guide lines (which can be turned off). The region stays within one monitor.
+- **Lock:** pins the region, so the next launch opens with it right away; a pinned region can still be moved. It is forgotten when its monitor changes resolution or scale.
 - **Screenshots:** copy to the clipboard or save as PNG.
-- **Recording:** MP4 with system audio and, optionally, the microphone; the region can be moved while recording.
-- **Preview:** the video plays inside the region, with seeking, volume, saving and copying the file.
+- **Recording:** MP4 with system audio and, optionally, the microphone; pause and resume as often as you like, and move the region while recording.
+- **Preview:** the video plays inside the region, with seeking and volume; save it, or copy it to the clipboard without saving.
 - **Editor:** brush and text, any color, font, size, undo, redo, clear.
 - **Two keybindings:** a main and an alternative behavior after selecting (copy, save, show the toolbar, in any useful mix). With a locked region, a behavior that does not show the toolbar shoots at once, with no UI.
 - **Settings window:** keybindings written into your Hyprland config, folders, asking where to save, file names, what Esc does, guide lines, frame rate, audio, microphone, pointer.
 
 ## Installation
+
+### Arch Linux package
+
+```sh
+git clone https://github.com/aksond1/Flick.git
+cd Flick/packaging/arch
+makepkg -si
+```
+
+This builds the latest commit from GitHub and installs `flick`, plus a **Flick Settings** entry for app launchers.
+
+### From source
 
 Dependencies (Arch Linux):
 
@@ -52,6 +64,7 @@ Behaviors that do not show the toolbar act as soon as the mouse is released; wit
 | Settings | Open the settings; the overlay comes back when they close |
 | Lock | Pin or unpin the region; a pinned region can still be moved by dragging it, and stays pinned there |
 | Play | Start recording; press again to stop and preview |
+| Pause | While recording: pause, then resume; the paused time is left out of the video and the timer |
 | Edit | Open the editor |
 | Copy | Copy the image and close |
 | Download | Save the image and close |
@@ -66,6 +79,8 @@ Behaviors that do not show the toolbar act as soon as the mouse is released; wit
 
 - Launching `flick` again while recording stops it. This is the only way when the region fills the screen and there is no room for the toolbar.
 - While recording, move the region with the dotted grip on the toolbar; it cannot be resized.
+- Starting a recording closes the overlays on the other monitors, so they show the live screen.
+- In the preview, Copy puts the file on the clipboard without saving it to your videos folder (Flick keeps the latest copied recording in `~/.cache/flick/clipboard`). Save keeps it in the folder.
 - Editor annotations are included by Copy and Download, but not in videos.
 
 ### Headless
@@ -114,13 +129,13 @@ dir = "/home/me/Videos/Flick"    # default: Flick in your videos directory
 ask = false                      # every save asks where
 ```
 
-The main and the alternative behavior must differ, one of them must show the toolbar, and the keys must differ. Videos are saved as MP4; copying a recording saves it first, because the clipboard holds the file.
+The main and the alternative behavior must differ, one of them must show the toolbar, and the keys must differ. Videos are saved as MP4.
 
 ## Limitations
 
 - Requires a compositor with `wlr-layer-shell` and `wlr-screencopy`; tested only on Hyprland. X11, GNOME and KDE are not supported.
 - No hardware encoding (video is encoded with x264).
-- Multiple monitors and fractional scaling are not fully tested yet.
+- A region cannot span two monitors.
 
 ## Development
 
@@ -131,3 +146,7 @@ cargo test
 ```
 
 Architecture and UI testing are described in [CLAUDE.md](CLAUDE.md).
+
+## License
+
+Flick is free software under the [GNU General Public License v3.0 or later](LICENSE): you may use, study, change and share it, and versions you distribute must stay open under the same license.
