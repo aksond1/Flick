@@ -8,7 +8,7 @@ Everything happens inside the selected region: selecting, editing, recording and
 
 ## Features
 
-- **Selection:** every monitor freezes and you select on any of them; move the region or resize it with 8 handles or their dashed guide lines (which can be turned off). The region stays within one monitor.
+- **Selection:** every monitor freezes and you select on any of them; move the region, resize it with 8 handles or their dashed guide lines (which can be turned off), or scale it with the mouse wheel. The region stays within one monitor.
 - **Lock:** pins the region, so the next launch opens with it right away; a pinned region can still be moved. It is forgotten when its monitor changes resolution or scale.
 - **Screenshots:** copy to the clipboard or save as PNG.
 - **Recording:** MP4 with system audio and, optionally, the microphone; pause and resume as often as you like, and move the region while recording.
@@ -74,6 +74,7 @@ Behaviors that do not show the toolbar act as soon as the mouse is released; wit
 |---|---|
 | Esc | Same as Close; in the editor, finish the text or leave the editor |
 | Space | Pause or play during preview |
+| Mouse wheel | While selecting: scale the region around its center, up to enlarge (not a locked region, not in the editor) |
 | Ctrl+Z | Undo (editor) |
 | Ctrl+Y, Ctrl+Shift+Z | Redo (editor) |
 

@@ -48,6 +48,25 @@ fn distance(p: (i32, i32), [a, b]: [(i32, i32); 2]) -> f64 {
     (ap.0 - t * ab.0).hypot(ap.1 - t * ab.1)
 }
 
+/// `base` scaled by `factor` around its center, keeping its proportions, at
+/// least `MIN_SIZE` and inside `screen`. Also returns the factor actually
+/// used, so scrolling back from a limit responds at once.
+pub fn zoomed(base: Rect, factor: f64, screen: Rect) -> (Rect, f64) {
+    let (w, h) = (f64::from(base.w), f64::from(base.h));
+    let max = (f64::from(screen.w) / w).min(f64::from(screen.h) / h);
+    let min = (f64::from(MIN_SIZE) / w).max(f64::from(MIN_SIZE) / h);
+    let f = factor.clamp(min.min(max), max);
+    let nw = ((w * f).round() as i32).clamp(MIN_SIZE.min(screen.w), screen.w);
+    let nh = ((h * f).round() as i32).clamp(MIN_SIZE.min(screen.h), screen.h);
+    // Doubled centers avoid drifting by half a pixel.
+    let at = |lo: i32, len: i32, new: i32, slo: i32, shi: i32| {
+        ((2 * lo + len - new) / 2).clamp(slo, shi - new)
+    };
+    let x = at(base.x, base.w, nw, screen.x, screen.right());
+    let y = at(base.y, base.h, nh, screen.y, screen.bottom());
+    (Rect::new(x, y, nw, nh), f)
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Drag {
     New((i32, i32)),
@@ -223,6 +242,17 @@ impl Selection {
         };
     }
 
+    /// Sets the region to `base` zoomed by `factor`; see [`zoomed`]. A locked
+    /// region keeps its size. Returns the factor used, `None` if nothing changed.
+    pub fn zoom(&mut self, base: Rect, factor: f64) -> Option<f64> {
+        if self.locked || self.drag.is_some() || self.region.is_none() {
+            return None;
+        }
+        let (r, f) = zoomed(base, factor, self.screen);
+        self.region = Some(r);
+        Some(f)
+    }
+
     /// Forgets the region, as when another output gets one.
     pub fn clear(&mut self) {
         self.drag = None;
@@ -246,6 +276,30 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_keeps_the_center_and_the_screen() {
+        let screen = Rect::new(0, 0, 1000, 800);
+        let r = Rect::new(400, 300, 200, 100);
+        let (big, f) = zoomed(r, 1.5, screen);
+        assert_eq!((big, f), (Rect::new(350, 275, 300, 150), 1.5));
+        assert_eq!(zoomed(r, 0.5, screen).0, Rect::new(450, 325, 100, 50));
+        // At an edge it grows inward rather than off the screen.
+        let corner = Rect::new(0, 0, 200, 100);
+        assert_eq!(zoomed(corner, 2.0, screen).0, Rect::new(0, 0, 400, 200));
+        // Limited by the screen's height, which runs out first.
+        let (max, f) = zoomed(r, 100.0, screen);
+        assert_eq!((max.w, max.h, f), (1000, 500, 5.0));
+        assert!(screen.contains(&max));
+        let (min, f) = zoomed(r, 0.0, screen);
+        assert_eq!((min.h, f), (MIN_SIZE, 0.05));
+        // A locked region keeps its size.
+        let mut s = Selection::new(screen, Some(r));
+        assert_eq!(s.zoom(r, 2.0), None);
+        s.locked = false;
+        assert_eq!(s.zoom(r, 2.0), Some(2.0));
+        assert_eq!(s.region, Some(Rect::new(300, 250, 400, 200)));
+    }
 
     const SCREEN: Rect = Rect::new(0, 0, 1000, 800);
 

@@ -29,6 +29,10 @@ const UNFREEZE: Duration = Duration::from_millis(200);
 /// Time for the compositor to show the moved border before video resumes.
 const SETTLE: Duration = Duration::from_millis(100);
 /// Accent color (blue, #1a73e8), shared with the CSS below.
+/// One wheel notch scales the region by this much.
+const ZOOM_STEP: f64 = 1.1;
+/// Scrolling counts as finished after this pause; then the behavior runs.
+const ZOOM_DONE: Duration = Duration::from_millis(400);
 const ACCENT: (f64, f64, f64) = (0.1, 0.45, 0.91);
 const CSS: &str = "
 window.flick-overlay { background: transparent; }
@@ -185,6 +189,11 @@ pub struct Overlay {
     /// The canvas cursor; setting one by name makes a new cursor every time.
     cursor: Cell<Option<&'static str>>,
     group: Rc<Group>,
+    /// The region before the current scrolling and the factor so far; zooming
+    /// from there keeps rounding from changing the proportions.
+    zoom: Cell<Option<(Rect, f64)>>,
+    /// Counts scroll events, so a new one outdates a pending finish.
+    zooms: Cell<u32>,
 }
 
 /// One output as it was when Flick started.
@@ -281,6 +290,8 @@ pub fn open(
         asking: Cell::new(false),
         cursor: Cell::new(None),
         group: group.clone(),
+        zoom: Cell::new(None),
+        zooms: Cell::new(0),
     });
     *o.keep.borrow_mut() = Some(o.clone());
     group.members.borrow_mut().push(Rc::downgrade(&o));
@@ -337,6 +348,7 @@ fn connect(o: &Rc<Overlay>) {
         if !o.take_selection() {
             return;
         }
+        o.zoom.set(None);
         o.selection.borrow_mut().begin(point(x, y));
         o.update_cursor((x, y));
         o.refresh();
@@ -402,6 +414,16 @@ fn connect(o: &Rc<Overlay>) {
         }
     });
     o.toolbar.grip.add_controller(drag);
+
+    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    let weak = Rc::downgrade(o);
+    scroll.connect_scroll(move |_, _, dy| {
+        if let Some(o) = weak.upgrade() {
+            o.scrolled(dy);
+        }
+        glib::Propagation::Stop
+    });
+    o.canvas.add_controller(scroll);
 
     let motion = gtk::EventControllerMotion::new();
     let weak = Rc::downgrade(o);
@@ -672,7 +694,7 @@ impl Overlay {
             cr.set_line_width(2.0);
             cr.stroke()?;
         }
-        if s.dragging() {
+        if s.dragging() || self.zoom.get().is_some() {
             let p = self.pixels(r);
             let text = format!("{} × {}", p.w, p.h);
             cr.set_font_size(14.0);
@@ -764,6 +786,35 @@ impl Overlay {
         if self.cursor.replace(name) != name {
             self.canvas.set_cursor_from_name(name);
         }
+    }
+
+    /// The wheel scales the region around its center; up makes it larger.
+    fn scrolled(self: &Rc<Self>, dy: f64) {
+        if !self.selecting() || self.editing.get() || self.asking.get() {
+            return;
+        }
+        let Some(region) = self.selection.borrow().region else {
+            return;
+        };
+        let (base, factor) = self.zoom.get().unwrap_or((region, 1.0));
+        let factor = factor * ZOOM_STEP.powf(-dy);
+        let Some(used) = self.selection.borrow_mut().zoom(base, factor) else {
+            return;
+        };
+        self.zoom.set(Some((base, used)));
+        self.refresh();
+        let (weak, this) = (Rc::downgrade(self), self.zooms.get() + 1);
+        self.zooms.set(this);
+        glib::timeout_add_local_once(ZOOM_DONE, move || {
+            let Some(o) = weak.upgrade().filter(|o| o.zooms.get() == this) else {
+                return;
+            };
+            o.zoom.set(None);
+            o.canvas.queue_draw();
+            if o.selecting() && o.selection.borrow().region.is_some() {
+                o.selected();
+            }
+        });
     }
 
     /// The keyboard follows the pointer between the outputs' overlays.

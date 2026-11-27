@@ -1,11 +1,15 @@
 //! Test helper: drives a virtual pointer. Use only inside a nested compositor.
 //! `VPTR_STEP` is the pause after each step in ms, 40 by default.
 //! `VPTR_SIZE=WxH` is the output size, 1920x1080 by default.
-//! Steps: `m X Y` move, `d` press, `u` release, `s MS` sleep.
+//! Steps: `m X Y` move, `d` press, `u` release, `s MS` sleep, `w N` wheel
+//! N notches down, `W N` up.
 use std::{env, thread::sleep, time::Duration};
 use wayland_client::{
     Connection, Dispatch, QueueHandle, delegate_noop,
-    protocol::{wl_pointer::ButtonState, wl_registry},
+    protocol::{
+        wl_pointer::{Axis, AxisSource, ButtonState},
+        wl_registry,
+    },
 };
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1 as Manager,
@@ -61,6 +65,11 @@ fn main() {
             "d" => p.button(t, 0x110, ButtonState::Pressed),
             "u" => p.button(t, 0x110, ButtonState::Released),
             "s" => sleep(Duration::from_millis(num().into())),
+            "w" | "W" => {
+                let n = num() as i32 * if c == "w" { 1 } else { -1 };
+                p.axis_source(AxisSource::Wheel);
+                p.axis_discrete(t, Axis::VerticalScroll, f64::from(15 * n), n);
+            }
             _ => panic!("unknown step {c}"),
         }
         if c != "s" {
